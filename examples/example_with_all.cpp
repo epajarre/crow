@@ -41,8 +41,10 @@ int main()
         return crow::response(os.str());
     });
 
+    // example which uses only response as a paramter wihtout
+    // request being a parameter.
     CROW_ROUTE(app,"/add/<int>/<int>")
-    ([](const crow::request& /*req*/, crow::response& res, int a, int b){
+    ([](crow::response& res, int a, int b){
         std::ostringstream os;
         os << a+b;
         res.write(os.str());
@@ -89,6 +91,7 @@ int main()
     //crow::logger::setHandler(std::make_shared<ExampleLogHandler>());
 
     app.port(18080)
+        .server_name("CrowCpp")
         .multithreaded()
         .run();
 }
