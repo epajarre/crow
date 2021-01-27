@@ -18,6 +18,7 @@
 #include "crow/http_request.h"
 #include "crow/http_server.h"
 #include "crow/dumb_timer_queue.h"
+#include "crow/compression.h"
 
 
 #ifdef CROW_MSVC_WORKAROUND
@@ -80,6 +81,18 @@ namespace crow
             -> typename std::result_of<decltype(&Router::new_rule_tagged<Tag>)(Router, std::string&&)>::type
         {
             return router_.new_rule_tagged<Tag>(std::move(rule));
+        }
+
+        self_t& signal_clear()
+        {
+            signals_.clear();
+            return *this;
+        }
+
+        self_t& signal_add(int signal_number)
+        {
+            signals_.push_back(signal_number);
+            return *this;
         }
 
         ///Set the port that Crow will handle requests on
@@ -148,6 +161,18 @@ namespace crow
             return *this;
         }
 
+        self_t& use_compression(compression::algorithm algorithm)
+        {
+            comp_algorithm_ = algorithm;
+            return *this;
+        }
+
+
+        compression::algorithm compression_algorithm()
+        {
+            return comp_algorithm_;
+        }
+
         ///A wrapper for `validate()` in the router
 
         ///
@@ -191,6 +216,11 @@ namespace crow
             {
                 server_ = std::move(std::unique_ptr<server_t>(new server_t(this, bindaddr_, port_, server_name_, &middlewares_, concurrency_, nullptr)));
                 server_->set_tick_function(tick_interval_, tick_function_);
+                server_->signal_clear();
+                for (auto snum : signals_)
+                {
+                    server_->signal_add(snum);
+                }
                 notify_server_start();
                 server_->run();
             }
@@ -321,6 +351,7 @@ namespace crow
         std::string server_name_ = "Crow/0.2";
         std::string bindaddr_ = "0.0.0.0";
         Router router_;
+        compression::algorithm comp_algorithm_;
 
         std::chrono::milliseconds tick_interval_;
         std::function<void()> tick_function_;
@@ -331,6 +362,8 @@ namespace crow
         std::unique_ptr<ssl_server_t> ssl_server_;
 #endif
         std::unique_ptr<server_t> server_;
+
+        std::vector<int> signals_{SIGINT, SIGTERM};
 
         bool server_started_{false};
         std::condition_variable cv_started_;

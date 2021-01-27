@@ -16,6 +16,7 @@
 #include "crow/dumb_timer_queue.h"
 #include "crow/middleware_context.h"
 #include "crow/socket_adaptors.h"
+#include "crow/compression.h"
 
 namespace crow
 {
@@ -355,6 +356,43 @@ namespace crow
                     decltype(*middlewares_)>
                 (*middlewares_, ctx_, req_, res);
             }
+
+            std::string accept_encoding = req_.get_header_value("Accept-Encoding");
+            if (!accept_encoding.empty() && res.compressed)
+            {
+                switch (handler_->compression_algorithm())
+                {
+                    case compression::DEFLATE:
+                        if (accept_encoding.find("deflate") != std::string::npos)
+                        {
+                            res.body = compression::compress_string(res.body, compression::algorithm::DEFLATE);
+                            res.set_header("Content-Encoding", "deflate");
+                        }
+                        break;
+                    case compression::GZIP:
+                        if (accept_encoding.find("gzip") != std::string::npos)
+                        {
+                            res.body = compression::compress_string(res.body, compression::algorithm::GZIP);
+                            res.set_header("Content-Encoding", "gzip");
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            //if there is a redirection with a partial URL, treat the URL as a route.
+            std::string location = res.get_header_value("Location");
+            if (!location.empty() && location.find("://", 0) == std::string::npos)
+            {
+                #ifdef CROW_ENABLE_SSL
+                location.insert(0, "https://" + req_.get_header_value("Host"));
+                #else
+                location.insert(0, "http://" + req_.get_header_value("Host"));
+                #endif
+                res.set_header("location", location);
+            }
+
            prepare_buffers();
             CROW_LOG_INFO << "Response: " << this << ' ' << req_.raw_url << ' ' << res.code << ' ' << close_connection_;
             if (res.is_static_type())
@@ -388,8 +426,11 @@ namespace crow
 
                 {300, "HTTP/1.1 300 Multiple Choices\r\n"},
                 {301, "HTTP/1.1 301 Moved Permanently\r\n"},
-                {302, "HTTP/1.1 302 Moved Temporarily\r\n"},
+                {302, "HTTP/1.1 302 Found\r\n"},
+                {303, "HTTP/1.1 303 See Other\r\n"},
                 {304, "HTTP/1.1 304 Not Modified\r\n"},
+                {307, "HTTP/1.1 307 Temporary Redirect\r\n"},
+                {308, "HTTP/1.1 308 Permanent Redirect\r\n"},
 
                 {400, "HTTP/1.1 400 Bad Request\r\n"},
                 {401, "HTTP/1.1 401 Unauthorized\r\n"},
@@ -411,11 +452,6 @@ namespace crow
 
             buffers_.clear();
             buffers_.reserve(4*(res.headers.size()+5)+3);
-
-            if (res.body.empty() && res.json_value.t() != json::type::Null)
-            {
-                res.body = json::dump(res.json_value);
-            }
 
             if (!statusCodes.count(res.code))
                 res.code = 500;

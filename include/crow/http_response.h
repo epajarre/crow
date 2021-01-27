@@ -4,15 +4,14 @@
 #include <ios>
 #include <fstream>
 #include <sstream>
+#include <sys/stat.h>
 
-#include "crow/json.h"
 #include "crow/http_request.h"
 #include "crow/ci_map.h"
-
 #include "crow/socket_adaptors.h"
 #include "crow/logging.h"
 #include "crow/mime_types.h"
-#include <sys/stat.h>
+#include "crow/returnable.h"
 
 
 namespace crow
@@ -28,8 +27,8 @@ namespace crow
 
         int code{200}; ///< The Status code for the response.
         std::string body; ///< The actual payload containing the response data.
-        json::wvalue json_value; ///< if the response body is JSON, this would be it.
         ci_map headers; ///< HTTP headers.
+        bool compressed = true; ///< If compression is enabled and this is false, the individual response will not be compressed.
 
         /// Set the value of an existing header in the response.
         void set_header(std::string key, std::string value)
@@ -53,18 +52,21 @@ namespace crow
         response() {}
         explicit response(int code) : code(code) {}
         response(std::string body) : body(std::move(body)) {}
-        response(json::wvalue&& json_value) : json_value(std::move(json_value))
-        {
-            json_mode();
-        }
         response(int code, std::string body) : code(code), body(std::move(body)) {}
-        response(const json::wvalue& json_value) : body(json::dump(json_value))
+        response (returnable&& value)
         {
-            json_mode();
+            body = value.dump();
+            set_header("Content-Type",value.content_type);
         }
-        response(int code, const json::wvalue& json_value) : code(code), body(json::dump(json_value))
+        response (returnable& value)
         {
-            json_mode();
+            body = value.dump();
+            set_header("Content-Type",value.content_type);
+        }
+        response (int code, returnable& value) : code(code)
+        {
+            body = value.dump();
+            set_header("Content-Type",value.content_type);
         }
 
         response(response&& r)
@@ -77,7 +79,6 @@ namespace crow
         response& operator = (response&& r) noexcept
         {
             body = std::move(r.body);
-            json_value = std::move(r.json_value);
             code = r.code;
             headers = std::move(r.headers);
             completed_ = r.completed_;
@@ -93,13 +94,42 @@ namespace crow
         void clear()
         {
             body.clear();
-            json_value.clear();
             code = 200;
             headers.clear();
             completed_ = false;
         }
 
+        /// Return a "Temporary Redirect" response.
+        ///
+        /// Location can either be a route or a full URL.
         void redirect(const std::string& location)
+        {
+            code = 307;
+            set_header("Location", location);
+        }
+
+        /// Return a "Permanent Redirect" response.
+        ///
+        /// Location can either be a route or a full URL.
+        void redirect_perm(const std::string& location)
+        {
+            code = 308;
+            set_header("Location", location);
+        }
+
+        /// Return a "Found (Moved Temporarily)" response.
+        ///
+        /// Location can either be a route or a full URL.
+        void moved(const std::string& location)
+        {
+            code = 302;
+            set_header("Location", location);
+        }
+
+        /// Return a "Moved Permanently" response.
+        ///
+        /// Location can either be a route or a full URL.
+        void moved_perm(const std::string& location)
         {
             code = 301;
             set_header("Location", location);
@@ -157,6 +187,7 @@ namespace crow
         void set_static_file_info(std::string path){
             file_info.path = path;
             file_info.statResult = stat(file_info.path.c_str(), &file_info.statbuf);
+            compressed = false;
             if (file_info.statResult == 0)
             {
                 std::size_t last_dot = path.find_last_of(".");
@@ -206,12 +237,6 @@ namespace crow
             std::function<void()> complete_request_handler_;
             std::function<bool()> is_alive_helper_;
             static_file_info file_info;
-
-            /// In case of a JSON object, set the Content-Type header.
-            void json_mode()
-            {
-                set_header("Content-Type", "application/json");
-            }
 
             template<typename Stream, typename Adaptor>
             void write_streamed(Stream& is, Adaptor& adaptor)
