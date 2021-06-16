@@ -23,6 +23,10 @@ you can see the first `<int>` is defined as `a` and the second as `b`. If you we
 ##Methods
 You can change the HTTP methods the route uses from just the default `GET` by using `method()`, your route macro should look like `CROW_ROUTE(app, "/add/<int>/<int>").methods(crow::HTTPMethod::GET, crow::HTTPMethod::PATCH)` or `CROW_ROUTE(app, "/add/<int>/<int>").methods("GET"_method, "PATCH"_method)`.
 
+!!! note
+
+    Crow handles `HEAD` and `OPTIONS` methods automatically. So adding those to your handler has no effect.
+
 ##Handler
 Basically a piece of code that gets executed whenever the client calls the associated route, usually in the form of a [lambda expression](https://en.cppreference.com/w/cpp/language/lambda). It can be as simple as `#!cpp ([](){return "Hello World"})`.<br><br>
 
@@ -42,7 +46,7 @@ Alternatively, you can define the response in the body and return it (`#!cpp ([]
 
 For more information on `crow::response` go [here](../../reference/structcrow_1_1response.html).<br><br>
 
-###return statement
+###Return statement
 A `crow::response` is very strictly tied to a route. If you can have something in a response constructor, you can return it in a handler.<br><br>
 The main return type is `std::string`. although you could also return a `crow::json::wvalue` or `crow::multipart::message` directly.<br><br>
 For more information on the specific constructors for a `crow::response` go [here](../../reference/structcrow_1_1response.html).
@@ -67,3 +71,6 @@ class a : public crow::returnable
     }
 }
 ```
+
+##Catchall routes
+By default, any request that Crow can't find a route for will return a simple 404 response. You can change that to return a default route using the `CROW_CATCHALL_ROUTE(app)` macro. Defining it is identical to a normal route, even when it comes to the `const crow::request&` and `crow::response&` parameters being optional.

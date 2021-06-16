@@ -1,5 +1,7 @@
 #define CATCH_CONFIG_MAIN
+#define CROW_ENABLE_COMPRESSION
 #define CROW_LOG_LEVEL 0
+#define CROW_MAIN
 #include <sys/stat.h>
 
 #include <iostream>
@@ -378,6 +380,54 @@ TEST_CASE("http_method")
 
     CHECK(405 == res.code);
   }
+
+  {
+    request req;
+    response res;
+
+    req.url = "/get_only";
+    req.method = "HEAD"_method;
+    app.handle(req, res);
+
+    CHECK(200 == res.code);
+    CHECK("" == res.body);
+  }
+
+  {
+    request req;
+    response res;
+
+    req.url = "/";
+    req.method = "OPTIONS"_method;
+    app.handle(req, res);
+
+    CHECK(204 == res.code);
+    CHECK("OPTIONS, HEAD, GET, POST" == res.get_header_value("Allow"));
+  }
+
+  {
+    request req;
+    response res;
+
+    req.url = "/does_not_exist";
+    req.method = "OPTIONS"_method;
+    app.handle(req, res);
+
+    CHECK(404 == res.code);
+  }
+
+  {
+    request req;
+    response res;
+
+    req.url = "/*";
+    req.method = "OPTIONS"_method;
+    app.handle(req, res);
+
+    CHECK(204 == res.code);
+    CHECK("OPTIONS, HEAD, GET, POST, PATCH, PURGE" == res.get_header_value("Allow"));
+
+  }
 }
 
 TEST_CASE("server_handling_error_request")
@@ -616,6 +666,24 @@ TEST_CASE("json_read_unescaping")
   }
 }
 
+TEST_CASE("json_read_string")
+{
+    auto x = json::load(R"({"message": 53})");
+    int y (x["message"]);
+    std::string z(x["message"]);
+    CHECK(53 == y);
+    CHECK("53" == z);
+}
+
+TEST_CASE("json_read_container")
+{
+    auto x = json::load(R"({"first": 53, "second": "55", "third": [5,6,7,8,3,2,1,4]})");
+    CHECK(std::vector<std::string>({"first", "second", "third"}) == x.keys());
+    CHECK(53 == int(x.lo()[0]));
+    CHECK("55" == std::string(x.lo()[1]));
+    CHECK (8 == int(x.lo()[2].lo()[3]));
+}
+
 TEST_CASE("json_write")
 {
   json::wvalue x;
@@ -651,11 +719,12 @@ TEST_CASE("json_write")
   CHECK(R"({"scores":[1,2,3]})" == y.dump());
 }
 
-TEST_CASE("json_copy_r_to_w_to_r")
+TEST_CASE("json_copy_r_to_w_to_w_to_r")
 {
   json::rvalue r = json::load(
       R"({"smallint":2,"bigint":2147483647,"fp":23.43,"fpsc":2.343e1,"str":"a string","trueval":true,"falseval":false,"nullval":null,"listval":[1,2,"foo","bar"],"obj":{"member":23,"other":"baz"}})");
-  json::wvalue w{r};
+  json::wvalue v{r};
+  json::wvalue w(v);
   json::rvalue x =
       json::load(w.dump());  // why no copy-ctor wvalue -> rvalue?
   CHECK(2 == x["smallint"]);
@@ -675,6 +744,39 @@ TEST_CASE("json_copy_r_to_w_to_r")
   CHECK("member" == x["obj"]["member"].key());
   CHECK("baz" == x["obj"]["other"]);
   CHECK("other" == x["obj"]["other"].key());
+}
+
+TEST_CASE("json_vector")
+{//TODO probably make constructors for the same values as = operator
+    json::wvalue a;
+    json::wvalue b;
+    json::wvalue c;
+    json::wvalue d;
+    json::wvalue e;
+    json::wvalue f;
+    json::wvalue g;
+    json::wvalue h;
+    a = 5;
+    b = 6;
+    c = 7;
+    d = 8;
+    e = 4;
+    f = 3;
+    g = 2;
+    h = 1;
+    std::vector<json::wvalue> nums;
+    nums.emplace_back(a);
+    nums.emplace_back(b);
+    nums.emplace_back(c);
+    nums.emplace_back(d);
+    nums.emplace_back(e);
+    nums.emplace_back(f);
+    nums.emplace_back(g);
+    nums.emplace_back(h);
+    json::wvalue x(nums);
+
+    CHECK(8 == x.size());
+    CHECK("[5,6,7,8,4,3,2,1]" == x.dump());
 }
 
 TEST_CASE("template_basic")
@@ -1081,9 +1183,15 @@ TEST_CASE("simple_url_params")
     c.receive(asio::buffer(buf, 2048));
     c.close();
 
-    CHECK(string(last_url_params.get("hello")) == "world");
-    CHECK(string(last_url_params.get("left")) == "right");
-    CHECK(string(last_url_params.get("up")) == "down");
+    query_string mutable_params(last_url_params);
+
+    CHECK(string(mutable_params.get("hello")) == "world");
+    CHECK(string(mutable_params.get("left")) == "right");
+    CHECK(string(mutable_params.get("up")) == "down");
+
+    std::string z = mutable_params.pop("left");
+    CHECK(z == "right");
+    CHECK(mutable_params.get("left") == nullptr);
   }
   // check multiple value, multiple types
   sendmsg = "GET /params?int=100&double=123.45&boolean=1\r\n\r\n";
@@ -1116,8 +1224,7 @@ TEST_CASE("simple_url_params")
     CHECK(string(last_url_params.get_list("tmnt")[0]) == "leonardo");
   }
   // check multiple array value
-  sendmsg =
-      "GET /params?tmnt[]=leonardo&tmnt[]=donatello&tmnt[]=raphael\r\n\r\n";
+  sendmsg = "GET /params?tmnt[]=leonardo&tmnt[]=donatello&tmnt[]=raphael\r\n\r\n";
   {
     asio::ip::tcp::socket c(is);
 
@@ -1131,6 +1238,25 @@ TEST_CASE("simple_url_params")
     CHECK(string(last_url_params.get_list("tmnt")[0]) == "leonardo");
     CHECK(string(last_url_params.get_list("tmnt")[1]) == "donatello");
     CHECK(string(last_url_params.get_list("tmnt")[2]) == "raphael");
+    CHECK(last_url_params.pop_list("tmnt").size() == 3);
+    CHECK(last_url_params.get_list("tmnt").size() == 0);
+  }
+  // check dictionary value
+  sendmsg = "GET /params?kees[one]=vee1&kees[two]=vee2&kees[three]=vee3\r\n\r\n";
+  {
+    asio::ip::tcp::socket c(is);
+
+    c.connect(asio::ip::tcp::endpoint(asio::ip::address::from_string(LOCALHOST_ADDRESS), 45451));
+    c.send(asio::buffer(sendmsg));
+    c.receive(asio::buffer(buf, 2048));
+    c.close();
+
+    CHECK(last_url_params.get_dict("kees").size() == 3);
+    CHECK(string(last_url_params.get_dict("kees")["one"]) == "vee1");
+    CHECK(string(last_url_params.get_dict("kees")["two"]) == "vee2");
+    CHECK(string(last_url_params.get_dict("kees")["three"]) == "vee3");
+    CHECK(last_url_params.pop_dict("kees").size() == 3);
+    CHECK(last_url_params.get_dict("kees").size() == 0);
   }
   app.stop();
 }
@@ -1700,4 +1826,64 @@ TEST_CASE("zlib_compression")
 
     app_deflate.stop();
     app_gzip.stop();
+}
+
+TEST_CASE("catchall")
+{
+    SimpleApp app;
+    SimpleApp app2;
+
+    CROW_ROUTE(app, "/place")([](){return "place";});
+
+    CROW_CATCHALL_ROUTE(app)([](){return "!place";});
+
+    CROW_ROUTE(app2, "/place")([](){return "place";});
+
+    app.validate();
+    app2.validate();
+
+    {
+      request req;
+      response res;
+
+      req.url = "/place";
+
+      app.handle(req, res);
+
+      CHECK(200 == res.code);
+    }
+
+    {
+      request req;
+      response res;
+
+      req.url = "/another_place";
+
+      app.handle(req, res);
+
+      CHECK(200 == res.code);
+      CHECK("!place" == res.body);
+    }
+
+    {
+      request req;
+      response res;
+
+      req.url = "/place";
+
+      app2.handle(req, res);
+
+      CHECK(200 == res.code);
+    }
+
+    {
+      request req;
+      response res;
+
+      req.url = "/another_place";
+
+      app2.handle(req, res);
+
+      CHECK(404 == res.code);
+    }
 }

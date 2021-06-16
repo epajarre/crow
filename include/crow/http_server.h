@@ -26,7 +26,7 @@ namespace crow
     class Server
     {
     public:
-    Server(Handler* handler, std::string bindaddr, uint16_t port, std::string server_name = "Crow/0.2", std::tuple<Middlewares...>* middlewares = nullptr, uint16_t concurrency = 1, typename Adaptor::context* adaptor_ctx = nullptr)
+    Server(Handler* handler, std::string bindaddr, uint16_t port, std::string server_name = "Crow/0.3", std::tuple<Middlewares...>* middlewares = nullptr, uint16_t concurrency = 1, typename Adaptor::context* adaptor_ctx = nullptr)
             : acceptor_(io_service_, tcp::endpoint(boost::asio::ip::address::from_string(bindaddr), port)),
             signals_(io_service_, SIGINT, SIGTERM),
             tick_timer_(io_service_),
@@ -80,7 +80,7 @@ namespace crow
                                 auto last_time_t = time(0);
                                 tm my_tm;
 
-#if defined(_MSC_VER) or defined(__MINGW32__)
+#if defined(_MSC_VER) || defined(__MINGW32__)
                                 gmtime_s(&my_tm, &last_time_t);
 #else
                                 gmtime_r(&last_time_t, &my_tm);
@@ -146,7 +146,7 @@ namespace crow
                         });
             }
 
-            CROW_LOG_INFO << server_name_ << " server is running at " << bindaddr_ <<":" << port_
+            CROW_LOG_INFO << server_name_ << " server is running at " << bindaddr_ <<":" << acceptor_.local_endpoint().port()
                           << " using " << concurrency_ << " threads";
             CROW_LOG_INFO << "Call `app.loglevel(crow::LogLevel::Warning)` to hide Info level logs.";
 

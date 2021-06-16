@@ -63,7 +63,7 @@ namespace crow
         template <typename F>
         void foreach_method(F f)
         {
-            for(uint32_t method = 0, method_bit = 1; method < (uint32_t)HTTPMethod::InternalMethodCount; method++, method_bit<<=1)
+            for(uint32_t method = 0, method_bit = 1; method < static_cast<uint32_t>(HTTPMethod::InternalMethodCount); method++, method_bit<<=1)
             {
                 if (methods_ & method_bit)
                     f(method);
@@ -73,7 +73,7 @@ namespace crow
         const std::string& rule() { return rule_; }
 
     protected:
-        uint32_t methods_{1<<(int)HTTPMethod::Get};
+        uint32_t methods_{1<<static_cast<int>(HTTPMethod::Get)};
 
         std::string rule_;
         std::string name_;
@@ -271,6 +271,101 @@ namespace crow
         }
     }
 
+
+    class CatchallRule
+    {
+    public:
+        CatchallRule(){}
+
+        template <typename Func>
+        typename std::enable_if<black_magic::CallHelper<Func, black_magic::S<>>::value, void>::type
+        operator()(Func&& f)
+        {
+            static_assert(!std::is_same<void, decltype(f())>::value,
+                "Handler function cannot have void return type; valid return types: string, int, crow::response, crow::returnable");
+
+            handler_ = (
+#ifdef CROW_CAN_USE_CPP14
+                [f = std::move(f)]
+#else
+                [f]
+#endif
+                (const request&, response& res){
+                    res = response(f());
+                    res.end();
+                });
+
+        }
+
+        template <typename Func>
+        typename std::enable_if<
+            !black_magic::CallHelper<Func, black_magic::S<>>::value &&
+            black_magic::CallHelper<Func, black_magic::S<crow::request>>::value,
+            void>::type
+        operator()(Func&& f)
+        {
+            static_assert(!std::is_same<void, decltype(f(std::declval<crow::request>()))>::value,
+                "Handler function cannot have void return type; valid return types: string, int, crow::response, crow::returnable");
+
+            handler_ = (
+#ifdef CROW_CAN_USE_CPP14
+                [f = std::move(f)]
+#else
+                [f]
+#endif
+                (const crow::request& req, crow::response& res){
+                    res = response(f(req));
+                    res.end();
+                });
+        }
+
+        template <typename Func>
+        typename std::enable_if<
+            !black_magic::CallHelper<Func, black_magic::S<>>::value &&
+            !black_magic::CallHelper<Func, black_magic::S<crow::request>>::value &&
+            black_magic::CallHelper<Func, black_magic::S<crow::response&>>::value,
+        void>::type
+        operator()(Func&& f)
+        {
+          static_assert(std::is_same<void, decltype(f(std::declval<crow::response&>()))>::value,
+                        "Handler function with response argument should have void return type");
+          handler_ = (
+#ifdef CROW_CAN_USE_CPP14
+                [f = std::move(f)]
+#else
+                [f]
+#endif
+                (const crow::request&, crow::response& res){
+                  f(res);
+                });
+        }
+
+        template <typename Func>
+        typename std::enable_if<
+            !black_magic::CallHelper<Func, black_magic::S<>>::value &&
+            !black_magic::CallHelper<Func, black_magic::S<crow::request>>::value &&
+            !black_magic::CallHelper<Func, black_magic::S<crow::response&>>::value,
+            void>::type
+        operator()(Func&& f)
+        {
+            static_assert(std::is_same<void, decltype(f(std::declval<crow::request>(), std::declval<crow::response&>()))>::value,
+                "Handler function with response argument should have void return type");
+
+                handler_ = std::move(f);
+        }
+
+        bool has_handler()
+        {
+            return (handler_ != nullptr);
+        }
+
+    protected:
+        friend class Router;
+    private:
+        std::function<void(const crow::request&, crow::response&)> handler_;
+    };
+
+
     /// A rule dealing with websockets.
 
     /// Provides the interface for the user to put in the necessary handlers for a websocket to work.
@@ -357,29 +452,29 @@ namespace crow
         using self_t = T;
         WebSocketRule& websocket()
         {
-            auto p =new WebSocketRule(((self_t*)this)->rule_);
-            ((self_t*)this)->rule_to_upgrade_.reset(p);
+            auto p =new WebSocketRule(static_cast<self_t*>(this)->rule_);
+            static_cast<self_t*>(this)->rule_to_upgrade_.reset(p);
             return *p;
         }
 
         self_t& name(std::string name) noexcept
         {
-            ((self_t*)this)->name_ = std::move(name);
-            return (self_t&)*this;
+            static_cast<self_t*>(this)->name_ = std::move(name);
+            return static_cast<self_t&>(*this);
         }
 
         self_t& methods(HTTPMethod method)
         {
-            ((self_t*)this)->methods_ = 1 << (int)method;
-            return (self_t&)*this;
+            static_cast<self_t*>(this)->methods_ = 1 << static_cast<int>(method);
+            return static_cast<self_t&>(*this);
         }
 
         template <typename ... MethodArgs>
         self_t& methods(HTTPMethod method, MethodArgs ... args_method)
         {
             methods(args_method...);
-            ((self_t*)this)->methods_ |= 1 << (int)method;
-            return (self_t&)*this;
+            static_cast<self_t*>(this)->methods_ |= 1 << static_cast<int>(method);
+            return static_cast<self_t&>(*this);
         }
 
     };
@@ -487,7 +582,7 @@ namespace crow
                 black_magic::CallHelper<Func, black_magic::S<crow::request, Args...>>::value ,
                 "Handler type is mismatched with URL parameters");
             static_assert(!std::is_same<void, decltype(f(std::declval<Args>()...))>::value,
-                "Handler function cannot have void return type; valid return types: string, int, crow::resposne, crow::json::wvalue");
+                "Handler function cannot have void return type; valid return types: string, int, crow::response, crow::returnable");
 
             handler_ = (
 #ifdef CROW_CAN_USE_CPP14
@@ -512,7 +607,7 @@ namespace crow
                 black_magic::CallHelper<Func, black_magic::S<crow::request, Args...>>::value,
                 "Handler type is mismatched with URL parameters");
             static_assert(!std::is_same<void, decltype(f(std::declval<crow::request>(), std::declval<Args>()...))>::value,
-                "Handler function cannot have void return type; valid return types: string, int, crow::resposne, crow::json::wvalue");
+                "Handler function cannot have void return type; valid return types: string, int, crow::response, crow::returnable");
 
             handler_ = (
 #ifdef CROW_CAN_USE_CPP14
@@ -606,7 +701,7 @@ namespace crow
         struct Node
         {
             unsigned rule_index{};
-            std::array<unsigned, (int)ParamType::MAX> param_childrens{};
+            std::array<unsigned, static_cast<int>(ParamType::MAX)> param_childrens{};
             std::unordered_map<std::string, unsigned> children;
 
             bool IsSimpleNode() const
@@ -624,7 +719,13 @@ namespace crow
         {
         }
 
-private:
+        ///Check whether or not the trie is empty.
+        bool is_empty()
+        {
+            return nodes_.size() > 1;
+        }
+
+    private:
         void optimizeNode(Node* node)
         {
             for(auto x : node->param_childrens)
@@ -675,7 +776,7 @@ private:
             optimizeNode(head());
         }
 
-public:
+    public:
         void validate()
         {
             if (!head()->IsSimpleNode())
@@ -706,7 +807,7 @@ public:
                 }
             };
 
-            if (node->param_childrens[(int)ParamType::INT])
+            if (node->param_childrens[static_cast<int>(ParamType::INT)])
             {
                 char c = req_url[pos];
                 if ((c >= '0' && c <= '9') || c == '+' || c == '-')
@@ -717,14 +818,14 @@ public:
                     if (errno != ERANGE && eptr != req_url.data()+pos)
                     {
                         params->int_params.push_back(value);
-                        auto ret = find(req_url, &nodes_[node->param_childrens[(int)ParamType::INT]], eptr - req_url.data(), params);
+                        auto ret = find(req_url, &nodes_[node->param_childrens[static_cast<int>(ParamType::INT)]], eptr - req_url.data(), params);
                         update_found(ret);
                         params->int_params.pop_back();
                     }
                 }
             }
 
-            if (node->param_childrens[(int)ParamType::UINT])
+            if (node->param_childrens[static_cast<int>(ParamType::UINT)])
             {
                 char c = req_url[pos];
                 if ((c >= '0' && c <= '9') || c == '+')
@@ -735,14 +836,14 @@ public:
                     if (errno != ERANGE && eptr != req_url.data()+pos)
                     {
                         params->uint_params.push_back(value);
-                        auto ret = find(req_url, &nodes_[node->param_childrens[(int)ParamType::UINT]], eptr - req_url.data(), params);
+                        auto ret = find(req_url, &nodes_[node->param_childrens[static_cast<int>(ParamType::UINT)]], eptr - req_url.data(), params);
                         update_found(ret);
                         params->uint_params.pop_back();
                     }
                 }
             }
 
-            if (node->param_childrens[(int)ParamType::DOUBLE])
+            if (node->param_childrens[static_cast<int>(ParamType::DOUBLE)])
             {
                 char c = req_url[pos];
                 if ((c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.')
@@ -753,14 +854,14 @@ public:
                     if (errno != ERANGE && eptr != req_url.data()+pos)
                     {
                         params->double_params.push_back(value);
-                        auto ret = find(req_url, &nodes_[node->param_childrens[(int)ParamType::DOUBLE]], eptr - req_url.data(), params);
+                        auto ret = find(req_url, &nodes_[node->param_childrens[static_cast<int>(ParamType::DOUBLE)]], eptr - req_url.data(), params);
                         update_found(ret);
                         params->double_params.pop_back();
                     }
                 }
             }
 
-            if (node->param_childrens[(int)ParamType::STRING])
+            if (node->param_childrens[static_cast<int>(ParamType::STRING)])
             {
                 size_t epos = pos;
                 for(; epos < req_url.size(); epos ++)
@@ -772,20 +873,20 @@ public:
                 if (epos != pos)
                 {
                     params->string_params.push_back(req_url.substr(pos, epos-pos));
-                    auto ret = find(req_url, &nodes_[node->param_childrens[(int)ParamType::STRING]], epos, params);
+                    auto ret = find(req_url, &nodes_[node->param_childrens[static_cast<int>(ParamType::STRING)]], epos, params);
                     update_found(ret);
                     params->string_params.pop_back();
                 }
             }
 
-            if (node->param_childrens[(int)ParamType::PATH])
+            if (node->param_childrens[static_cast<int>(ParamType::PATH)])
             {
                 size_t epos = req_url.size();
 
                 if (epos != pos)
                 {
                     params->string_params.push_back(req_url.substr(pos, epos-pos));
-                    auto ret = find(req_url, &nodes_[node->param_childrens[(int)ParamType::PATH]], epos, params);
+                    auto ret = find(req_url, &nodes_[node->param_childrens[static_cast<int>(ParamType::PATH)]], epos, params);
                     update_found(ret);
                     params->string_params.pop_back();
                 }
@@ -834,12 +935,12 @@ public:
                     {
                         if (url.compare(i, x.name.size(), x.name) == 0)
                         {
-                            if (!nodes_[idx].param_childrens[(int)x.type])
+                            if (!nodes_[idx].param_childrens[static_cast<int>(x.type)])
                             {
                                 auto new_node_idx = new_node();
-                                nodes_[idx].param_childrens[(int)x.type] = new_node_idx;
+                                nodes_[idx].param_childrens[static_cast<int>(x.type)] = new_node_idx;
                             }
-                            idx = nodes_[idx].param_childrens[(int)x.type];
+                            idx = nodes_[idx].param_childrens[static_cast<int>(x.type)];
                             i += x.name.size();
                             break;
                         }
@@ -865,12 +966,12 @@ public:
     private:
         void debug_node_print(Node* n, int level)
         {
-            for(int i = 0; i < (int)ParamType::MAX; i ++)
+            for(int i = 0; i < static_cast<int>(ParamType::MAX); i ++)
             {
                 if (n->param_childrens[i])
                 {
                     CROW_LOG_DEBUG << std::string(2*level, ' ') /*<< "("<<n->param_childrens[i]<<") "*/;
-                    switch((ParamType)i)
+                    switch(static_cast<ParamType>(i))
                     {
                         case ParamType::INT:
                             CROW_LOG_DEBUG << "<int>";
@@ -928,6 +1029,7 @@ public:
         std::vector<Node> nodes_;
     };
 
+
     /// Handles matching requests to existing rules and upgrade requests.
     class Router
     {
@@ -953,6 +1055,11 @@ public:
             all_rules_.emplace_back(ruleObject);
 
             return *ruleObject;
+        }
+
+        CatchallRule& catchall_rule()
+        {
+            return catchall_rule_;
         }
 
         void internal_add_rule_object(const std::string& rule, BaseRule* ruleObject)
@@ -1000,13 +1107,14 @@ public:
             }
         }
 
+        //TODO maybe add actual_method
         template <typename Adaptor>
         void handle_upgrade(const request& req, response& res, Adaptor&& adaptor)
         {
             if (req.method >= HTTPMethod::InternalMethodCount)
                 return;
 
-            auto& per_method = per_methods_[(int)req.method];
+            auto& per_method = per_methods_[static_cast<int>(req.method)];
             auto& rules = per_method.rules;
             unsigned rule_index = per_method.trie.find(req.url).first;
 
@@ -1050,7 +1158,7 @@ public:
                 return;
             }
 
-            CROW_LOG_DEBUG << "Matched rule (upgrade) '" << rules[rule_index]->rule_ << "' " << (uint32_t)req.method << " / " << rules[rule_index]->get_methods();
+            CROW_LOG_DEBUG << "Matched rule (upgrade) '" << rules[rule_index]->rule_ << "' " << static_cast<uint32_t>(req.method) << " / " << rules[rule_index]->get_methods();
 
             // any uncaught exceptions become 500s
             try
@@ -1075,9 +1183,63 @@ public:
 
         void handle(const request& req, response& res)
         {
+            HTTPMethod method_actual = req.method;
             if (req.method >= HTTPMethod::InternalMethodCount)
                 return;
-            auto& per_method = per_methods_[(int)req.method];
+            else if (req.method == HTTPMethod::Head)
+            {
+                method_actual = HTTPMethod::Get;
+                res.is_head_response = true;
+            }
+            else if (req.method == HTTPMethod::Options)
+            {
+                std::string allow = "OPTIONS, HEAD, ";
+
+                if (req.url == "/*")
+                {
+                    for(int i = 0; i < static_cast<int>(HTTPMethod::InternalMethodCount); i ++)
+                    {
+                        if (per_methods_[i].trie.is_empty())
+                        {
+                            allow += method_name(static_cast<HTTPMethod>(i)) + ", ";
+                        }
+                    }
+                        allow = allow.substr(0, allow.size()-2);
+                        res = response(204);
+                        res.set_header("Allow", allow);
+                        res.manual_length_header = true;
+                        res.end();
+                        return;
+                }
+                else
+                {
+                    for(int i = 0; i < static_cast<int>(HTTPMethod::InternalMethodCount); i ++)
+                    {
+                        if (per_methods_[i].trie.find(req.url).first)
+                        {
+                            allow += method_name(static_cast<HTTPMethod>(i)) + ", ";
+                        }
+                    }
+                    if (allow != "OPTIONS, HEAD, ")
+                    {
+                        allow = allow.substr(0, allow.size()-2);
+                        res = response(204);
+                        res.set_header("Allow", allow);
+                        res.manual_length_header = true;
+                        res.end();
+                        return;
+                    }
+                    else
+                    {
+                        CROW_LOG_DEBUG << "Cannot match rules " << req.url;
+                        res = response(404);
+                        res.end();
+                        return;
+                    }
+                }
+            }
+
+            auto& per_method = per_methods_[static_cast<int>(method_actual)];
             auto& trie = per_method.trie;
             auto& rules = per_method.rules;
 
@@ -1091,15 +1253,23 @@ public:
                 {
                     if (per_method.trie.find(req.url).first)
                     {
-                        CROW_LOG_DEBUG << "Cannot match method " << req.url << " " << method_name(req.method);
+                        CROW_LOG_DEBUG << "Cannot match method " << req.url << " " << method_name(method_actual);
                         res = response(405);
                         res.end();
                         return;
                     }
                 }
 
-                CROW_LOG_DEBUG << "Cannot match rules " << req.url;
-                res = response(404);
+                if (catchall_rule_.has_handler())
+                {
+                    CROW_LOG_DEBUG << "Cannot match rules " << req.url << ". Redirecting to Catchall rule";
+                    catchall_rule_.handler_(req, res);
+                }
+                else
+                {
+                    CROW_LOG_DEBUG << "Cannot match rules " << req.url;
+                    res = response(404);
+                }
                 res.end();
                 return;
             }
@@ -1125,7 +1295,7 @@ public:
                 return;
             }
 
-            CROW_LOG_DEBUG << "Matched rule '" << rules[rule_index]->rule_ << "' " << (uint32_t)req.method << " / " << rules[rule_index]->get_methods();
+            CROW_LOG_DEBUG << "Matched rule '" << rules[rule_index]->rule_ << "' " << static_cast<uint32_t>(req.method) << " / " << rules[rule_index]->get_methods();
 
             // any uncaught exceptions become 500s
             try
@@ -1150,14 +1320,16 @@ public:
 
         void debug_print()
         {
-            for(int i = 0; i < (int)HTTPMethod::InternalMethodCount; i ++)
+            for(int i = 0; i < static_cast<int>(HTTPMethod::InternalMethodCount); i ++)
             {
-                CROW_LOG_DEBUG << method_name((HTTPMethod)i);
+                CROW_LOG_DEBUG << method_name(static_cast<HTTPMethod>(i));
                 per_methods_[i].trie.debug_print();
             }
         }
 
     private:
+        CatchallRule catchall_rule_;
+
         struct PerMethod
         {
             std::vector<BaseRule*> rules;
@@ -1166,7 +1338,8 @@ public:
             // rule index 0, 1 has special meaning; preallocate it to avoid duplication.
             PerMethod() : rules(2) {}
         };
-        std::array<PerMethod, (int)HTTPMethod::InternalMethodCount> per_methods_;
+        std::array<PerMethod, static_cast<int>(HTTPMethod::InternalMethodCount)> per_methods_;
         std::vector<std::unique_ptr<BaseRule>> all_rules_;
+
     };
 }

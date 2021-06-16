@@ -1,3 +1,4 @@
+#define CROW_MAIN
 #include "crow.h"
 
 #include <sstream>
@@ -43,31 +44,32 @@ int main()
 
     app.get_middleware<ExampleMiddleware>().setMessage("hello");
 
-    app.route_dynamic("/")
+    CROW_ROUTE(app, "/")
+        .name("hello")
     ([]{
         return "Hello World!";
     });
 
-    app.route_dynamic("/about")
+    CROW_ROUTE(app, "/about")
     ([](){
         return "About Crow example.";
     });
 
     // a request to /path should be forwarded to /path/
-    app.route_dynamic("/path/")
+    CROW_ROUTE(app, "/path/")
     ([](){
         return "Trailing slash test case..";
     });
 
     // simple json response
-    app.route_dynamic("/json")
+    CROW_ROUTE(app, "/json")
     ([]{
         crow::json::wvalue x;
         x["message"] = "Hello, World!";
         return x;
     });
 
-    app.route_dynamic("/hello/<int>")
+    CROW_ROUTE(app, "/hello/<int>")
     ([](int count){
         if (count > 100)
             return crow::response(400);
@@ -76,7 +78,7 @@ int main()
         return crow::response(os.str());
     });
 
-    app.route_dynamic("/add/<int>/<int>")
+    CROW_ROUTE(app, "/add/<int>/<int>")
     ([](crow::response& res, int a, int b){
         std::ostringstream os;
         os << a+b;
@@ -91,8 +93,8 @@ int main()
     //});
 
     // more json example
-    app.route_dynamic("/add_json")
-        .methods(crow::HTTPMethod::POST)
+    CROW_ROUTE(app, "/add_json")
+        .methods(crow::HTTPMethod::Post)
     ([](const crow::request& req){
         auto x = crow::json::load(req.body);
         if (!x)
@@ -121,7 +123,7 @@ int main()
     });    
 
     // ignore all log
-    crow::logger::setLogLevel(crow::LogLevel::DEBUG);
+    crow::logger::setLogLevel(crow::LogLevel::Debug);
     //crow::logger::setHandler(std::make_shared<ExampleLogHandler>());
 
     app.port(18080)

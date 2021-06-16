@@ -317,7 +317,7 @@ namespace crow
                 res.is_alive_helper_ = [this]()->bool{ return adaptor_.is_open(); };
 
                 ctx_ = detail::context<Middlewares...>();
-                req.middleware_context = (void*)&ctx_;
+                req.middleware_context = static_cast<void*>(&ctx_);
                 req.io_service = &adaptor_.get_io_service();
                 detail::middleware_call_helper<0, decltype(ctx_), decltype(*middlewares_), Middlewares...>(*middlewares_, req, res, ctx_);
 
@@ -351,12 +351,12 @@ namespace crow
 
                 // call all after_handler of middlewares
                 detail::after_handlers_call_helper<
-                    ((int)sizeof...(Middlewares)-1),
+                    (static_cast<int>(sizeof...(Middlewares))-1),
                     decltype(ctx_),
                     decltype(*middlewares_)>
                 (*middlewares_, ctx_, req_, res);
             }
-
+#ifdef CROW_ENABLE_COMPRESSION
             std::string accept_encoding = req_.get_header_value("Accept-Encoding");
             if (!accept_encoding.empty() && res.compressed)
             {
@@ -380,7 +380,7 @@ namespace crow
                         break;
                 }
             }
-
+#endif
             //if there is a redirection with a partial URL, treat the URL as a route.
             std::string location = res.get_header_value("Location");
             if (!location.empty() && location.find("://", 0) == std::string::npos)
@@ -394,7 +394,7 @@ namespace crow
             }
 
            prepare_buffers();
-            CROW_LOG_INFO << "Response: " << this << ' ' << req_.raw_url << ' ' << res.code << ' ' << close_connection_;
+
             if (res.is_static_type())
             {
                 do_write_static();
@@ -472,7 +472,7 @@ namespace crow
 
             }
 
-            if (!res.headers.count("content-length"))
+            if (!res.manual_length_header && !res.headers.count("content-length"))
             {
                 content_length_ = std::to_string(res.body.size());
                 static std::string content_length_tag = "Content-Length: ";

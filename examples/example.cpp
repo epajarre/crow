@@ -1,3 +1,4 @@
+#define CROW_MAIN
 #include "crow.h"
 
 #include <sstream>
@@ -171,7 +172,7 @@ int main()
     });
 
     // enables all log
-    app.loglevel(crow::LogLevel::DEBUG);
+    app.loglevel(crow::LogLevel::Debug);
     //crow::logger::setHandler(std::make_shared<ExampleLogHandler>());
 
     app.port(18080)

@@ -1,9 +1,14 @@
 #pragma once
 
 //#define CROW_JSON_NO_ERROR_CHECK
+//#define CROW_JSON_USE_MAP
 
 #include <string>
+#ifdef CROW_JSON_USE_MAP
+#include <map>
+#else
 #include <unordered_map>
+#endif
 #include <iostream>
 #include <algorithm>
 #include <memory>
@@ -172,7 +177,7 @@ namespace crow
                 uint8_t owned_{0};
                 friend std::ostream& operator << (std::ostream& os, const r_string& s)
                 {
-                    os << (std::string)s;
+                    os << static_cast<std::string>(s);
                     return os;
                 }
             private:
@@ -292,7 +297,29 @@ namespace crow
 
             explicit operator int() const
             {
-                return (int)i();
+                return static_cast<int>(i());
+            }
+
+            ///Return any json value (not object or list) as a string.
+            explicit operator std::string() const
+            {
+#ifndef CROW_JSON_NO_ERROR_CHECK
+                if (t() == type::Object || t() == type::List)
+                    throw std::runtime_error("json type container");
+#endif
+                switch (t())
+                {
+                    case type::String:
+                        return std::string(s());
+                    case type::Null:
+                        return std::string("null");
+                    case type::True:
+                        return std::string("true");
+                    case type::False:
+                        return std::string("false");
+                    default:
+                        return std::string(start_, end_-start_);
+                }
             }
 
             /// The type of the JSON value.
@@ -382,6 +409,22 @@ namespace crow
                 return detail::r_string{start_, end_};
             }
 
+            ///The list or object value
+            std::vector<rvalue> lo()
+            {
+#ifndef CROW_JSON_NO_ERROR_CHECK
+                if (t() != type::Object && t() != type::List)
+                    throw std::runtime_error("value is not a container");
+#endif
+                std::vector<rvalue> ret;
+                ret.reserve(lsize_);
+                for (uint32_t i = 0; i<lsize_; i++)
+                {
+                    ret.emplace_back(l_[i]);
+                }
+                return ret;
+            }
+
             /// Convert escaped string character to their original form ("\\n" -> '\n').
             void unescape() const
             {
@@ -448,6 +491,7 @@ namespace crow
                 }
             }
 
+            ///Check if the json object has the passed string as a key.
             bool has(const char* str) const
             {
                 return has(std::string(str));
@@ -522,7 +566,7 @@ namespace crow
 #ifndef CROW_JSON_NO_ERROR_CHECK
                 if (t() != type::List)
                     throw std::runtime_error("value is not a list");
-                if (index >= (int)lsize_ || index < 0)
+                if (index >= static_cast<int>(lsize_) || index < 0)
                     throw std::runtime_error("list out of bound");
 #endif
                 return l_[index];
@@ -589,6 +633,21 @@ namespace crow
             bool error() const
             {
                 return (option_&error_bit)!=0;
+            }
+
+            std::vector<std::string> keys()
+            {
+#ifndef CROW_JSON_NO_ERROR_CHECK
+                if (t() != type::Object)
+                    throw std::runtime_error("value is not an object");
+#endif
+                std::vector<std::string> ret;
+                ret.reserve(lsize_);
+                for (uint32_t i = 0; i<lsize_; i++)
+                {
+                    ret.emplace_back(std::string(l_[i].key()));
+                }
+                return ret;
             }
         private:
             bool is_cached() const
@@ -905,7 +964,7 @@ namespace crow
                         switch(*data)
                         {
                             case '0':
-                                state = (NumberParsingState)"\2\2\7\3\4\6\6"[state];
+                                state = static_cast<NumberParsingState>("\2\2\7\3\4\6\6"[state]);
                                 /*if (state == NumberParsingState::Minus || state == NumberParsingState::AfterMinus)
                                 {
                                     state = NumberParsingState::ZeroFirst;
@@ -926,7 +985,7 @@ namespace crow
                             case '1': case '2': case '3': 
                             case '4': case '5': case '6': 
                             case '7': case '8': case '9':
-                                state = (NumberParsingState)"\3\3\7\3\4\6\6"[state];
+                                state = static_cast<NumberParsingState>("\3\3\7\3\4\6\6"[state]);
                                 while(*(data+1) >= '0' && *(data+1) <= '9') data++;
                                 /*if (state == NumberParsingState::Minus || state == NumberParsingState::AfterMinus)
                                 {
@@ -946,7 +1005,7 @@ namespace crow
                                     return {};*/
                                 break;
                             case '.':
-                                state = (NumberParsingState)"\7\7\4\4\7\7\7"[state];
+                                state = static_cast<NumberParsingState>("\7\7\4\4\7\7\7"[state]);
                                 /*
                                 if (state == NumberParsingState::Digits || state == NumberParsingState::ZeroFirst)
                                 {
@@ -957,7 +1016,7 @@ namespace crow
                                 */
                                 break;
                             case '-':
-                                state = (NumberParsingState)"\1\7\7\7\7\6\7"[state];
+                                state = static_cast<NumberParsingState>("\1\7\7\7\7\6\7"[state]);
                                 /*if (state == NumberParsingState::Minus)
                                 {
                                     state = NumberParsingState::AfterMinus;
@@ -970,7 +1029,7 @@ namespace crow
                                     return {};*/
                                 break;
                             case '+':
-                                state = (NumberParsingState)"\7\7\7\7\7\6\7"[state];
+                                state = static_cast<NumberParsingState>("\7\7\7\7\7\6\7"[state]);
                                 /*if (state == NumberParsingState::E)
                                 {
                                     state = NumberParsingState::DigitsAfterE;
@@ -979,7 +1038,7 @@ namespace crow
                                     return {};*/
                                 break;
                             case 'e': case 'E':
-                                state = (NumberParsingState)"\7\7\7\5\5\7\7"[state];
+                                state = static_cast<NumberParsingState>("\7\7\7\5\5\7\7"[state]);
                                 /*if (state == NumberParsingState::Digits || 
                                     state == NumberParsingState::DigitsAfterPoints)
                                 {
@@ -1091,6 +1150,7 @@ namespace crow
                         }
 
                         // TODO caching key to speed up (flyweight?)
+                        // I have no idea how flyweight could apply here, but maybe some speedup can happen if we stopped checking type since decode_string returns a string anyway
                         auto key = t.s();
 
                         ws_skip();
@@ -1176,10 +1236,25 @@ namespace crow
             } num; ///< Value if type is a number.
             std::string s; ///< Value if type is a string.
             std::unique_ptr<std::vector<wvalue>> l; ///< Value if type is a list.
+#ifdef CROW_JSON_USE_MAP
+            std::unique_ptr<std::map<std::string, wvalue>> o;
+#else
             std::unique_ptr<std::unordered_map<std::string, wvalue>> o; ///< Value if type is a JSON object.
+#endif
+
         public:
 
             wvalue() : returnable("application/json") {}
+
+            wvalue(std::vector<wvalue>& r) : returnable("application/json")
+            {
+                t_ = type::List;
+                l = std::unique_ptr<std::vector<wvalue>>(new std::vector<wvalue>{});
+                l->reserve(r.size());
+                for(auto it = r.begin(); it != r.end(); ++it)
+                    l->emplace_back(*it);
+            }
+
             /// Create a write value from a read value (useful for editing JSON strings).
             wvalue(const rvalue& r) : returnable("application/json")
             {
@@ -1209,12 +1284,51 @@ namespace crow
                             l->emplace_back(*it);
                         return;
                     case type::Object:
-                        o = std::unique_ptr<
-                                    std::unordered_map<std::string, wvalue>
-                                >(
-                                new std::unordered_map<std::string, wvalue>{});
+#ifdef CROW_JSON_USE_MAP
+                        o = std::unique_ptr<std::map<std::string, wvalue>>(new std::map<std::string, wvalue>{});
+#else
+                        o = std::unique_ptr<std::unordered_map<std::string, wvalue>>(new std::unordered_map<std::string, wvalue>{});
+#endif
                         for(auto it = r.begin(); it != r.end(); ++it)
                             o->emplace(it->key(), *it);
+                        return;
+                }
+            }
+
+            wvalue(const wvalue& r) : returnable("application/json")
+            {
+                t_ = r.t();
+                switch(r.t())
+                {
+                    case type::Null:
+                    case type::False:
+                    case type::True:
+                        return;
+                    case type::Number:
+                        nt = r.nt;
+                        if (nt == num_type::Floating_point)
+                          num.d = r.num.d;
+                        else if (nt == num_type::Signed_integer)
+                          num.si = r.num.si;
+                        else
+                          num.ui = r.num.ui;
+                        return;
+                    case type::String:
+                        s = r.s;
+                        return;
+                    case type::List:
+                        l = std::unique_ptr<std::vector<wvalue>>(new std::vector<wvalue>{});
+                        l->reserve(r.size());
+                        for(auto it = r.l->begin(); it != r.l->end(); ++it)
+                            l->emplace_back(*it);
+                        return;
+                    case type::Object:
+#ifdef CROW_JSON_USE_MAP
+                        o = std::unique_ptr<std::map<std::string, wvalue>>(new std::map<std::string, wvalue>{});
+#else
+                        o = std::unique_ptr<std::unordered_map<std::string, wvalue>>(new std::unordered_map<std::string, wvalue>{});
+#endif
+                        o->insert(r.o->begin(), r.o->end());
                         return;
                 }
             }
@@ -1421,10 +1535,11 @@ namespace crow
                     reset();
                 t_ = type::Object;
                 if (!o)
-                    o = std::unique_ptr<
-                                std::unordered_map<std::string, wvalue>
-                            >(
-                            new std::unordered_map<std::string, wvalue>{});
+#ifdef CROW_JSON_USE_MAP
+                        o = std::unique_ptr<std::map<std::string, wvalue>>(new std::map<std::string, wvalue>{});
+#else
+                        o = std::unique_ptr<std::unordered_map<std::string, wvalue>>(new std::unordered_map<std::string, wvalue>{});
+#endif
                 return (*o)[str];
             }
 
@@ -1440,6 +1555,15 @@ namespace crow
                 return result;
             }
 
+            /// If the wvalue is a list, it returns the length of the list, otherwise it returns 1.
+            std::size_t size() const
+            {
+                if (t_ != type::List)
+                    return 1;
+                return l->size();
+            }
+
+            /// Returns an estimated size of the value in bytes.
             size_t estimate_length() const
             {
                 switch(t_)
@@ -1482,14 +1606,14 @@ namespace crow
 
         private:
 
-            inline void dump_string(const std::string& str, std::string& out)
+            inline void dump_string(const std::string& str, std::string& out) const
             {
                 out.push_back('"');
                 escape(str, out);
                 out.push_back('"');
             }
 
-            inline void dump_internal(const wvalue& v, std::string& out)
+            inline void dump_internal(const wvalue& v, std::string& out) const
             {
                 switch(v.t_)
                 {
@@ -1565,7 +1689,7 @@ namespace crow
             }
 
         public:
-            std::string dump()
+            std::string dump() const
             {
                 std::string ret;
                 ret.reserve(estimate_length());
