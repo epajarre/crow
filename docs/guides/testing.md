@@ -1,7 +1,7 @@
 Unit tests can be written in 2 ways for a Crow application.<br><br>
 
-##The handler method
-Crow Allows users to handle requests that may not come from the network. This is done by calling the `handle(req, res)` method and providing a request and response objects. Which causes crow to identify and run the appropriate handler, returning the resulting response.
+## The handler method
+Crow allows users to handle requests that may not come from the network. This is done by calling the `handle(req, res)` method and providing a request and response objects. Which causes crow to identify and run the appropriate handler, returning the resulting response.
 
 ```cpp linenums="1"
   CROW_ROUTE(app, "/place")
@@ -29,7 +29,7 @@ Crow Allows users to handle requests that may not come from the network. This is
     This method does not send any data, nor does it run any post handle code, so things like static file serving (as far as sending the actual data) or compression cannot be tested using this method.
 
 
-##The client method
+## The client method
 This method involves creating a simple [ASIO](https://think-async.com/Asio/) client that sends the request and receives the response. It is considerably more complex than the earlier method, but it is both more realistic and includes post handle operations.
 
 ```cpp linenums="1"
@@ -74,4 +74,4 @@ Finally check the result against the expected one.
 
 !!! warning
 
-    Be absolutely sure that the line `app.stop()` runs, whether the test fails or succeedes. Not running it WILL CAUSE OTHER TESTS TO FAIL AND THE TEST TO HANG UNTIL THE PROCESS IS TERMINATED.
+    Be absolutely sure that the line `app.stop()` runs, whether the test fails or succeeds. Not running it WILL CAUSE OTHER TESTS TO FAIL AND THE TEST TO HANG UNTIL THE PROCESS IS TERMINATED.

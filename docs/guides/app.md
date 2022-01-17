@@ -1,15 +1,15 @@
 A Crow app defines an interface to allow the developer access to all the different parts of the framework, without having to manually deal with each one.<br><br>
-An app allows access to the http server (for handling connections), router (for handling URLs and requests), Middlewares (for extending Crow), amoung many others.<br><br>
+An app allows access to the http server (for handling connections), router (for handling URLs and requests), Middlewares (for extending Crow), among many others.<br><br>
 
 Crow has 2 different app types:
 
-##SimpleApp
+## SimpleApp
 Has no middlewares.
 
-##App&lt;m1, m2, ...&gt;
+## App&lt;m1, m2, ...&gt;
 Has middlewares.
 
-##Using the app
+## Using the app
 To use a Crow app, simply define `#!cpp crow::SimpleApp` or `#!cpp crow::App<m1, m2 ...>` if you're using middlewares.<br>
 The methods of an app can be chained. That means that you can configure and run your app in the same code line.
 ``` cpp
