@@ -6,6 +6,7 @@
 #include <functional>
 #include "crow/json.h"
 #include "crow/logging.h"
+#include "crow/returnable.h"
 #include "crow/utility.h"
 
 namespace crow
@@ -27,6 +28,22 @@ namespace crow
                 return msg.c_str();
             }
             std::string msg;
+        };
+
+        struct rendered_template : returnable
+        {
+            rendered_template():
+              returnable("text/html") {}
+
+            rendered_template(std::string& body):
+              returnable("text/html"), body_(std::move(body)) {}
+
+            std::string body_;
+
+            std::string dump() const override
+            {
+                return body_;
+            }
         };
 
         enum class ActionType
@@ -146,8 +163,8 @@ namespace crow
                         case '"': out += "&quot;"; break;
                         case '\'': out += "&#39;"; break;
                         case '/': out += "&#x2F;"; break;
-                        case '`': out += "&#x60"; break;
-                        case '=': out += "&#x3D"; break;
+                        case '`': out += "&#x60;"; break;
+                        case '=': out += "&#x3D;"; break;
                         default: out += *it; break;
                     }
                 }
@@ -231,7 +248,7 @@ namespace crow
                                     while (execute_result.find("{{") != std::string::npos)
                                     {
                                         template_t result_plug(execute_result);
-                                        execute_result = result_plug.render(*(stack[0]));
+                                        execute_result = result_plug.render_string(*(stack[0]));
                                     }
 
                                     if (action.t == ActionType::Tag)
@@ -339,7 +356,31 @@ namespace crow
             }
 
         public:
-            std::string render() const
+            /// Output a returnable template from this mustache template
+            rendered_template render() const
+            {
+                context empty_ctx;
+                std::vector<context*> stack;
+                stack.emplace_back(&empty_ctx);
+
+                std::string ret;
+                render_internal(0, fragments_.size() - 1, stack, ret, 0);
+                return rendered_template(ret);
+            }
+
+            /// Apply the values from the context provided and output a returnable template from this mustache template
+            rendered_template render(context& ctx) const
+            {
+                std::vector<context*> stack;
+                stack.emplace_back(&ctx);
+
+                std::string ret;
+                render_internal(0, fragments_.size() - 1, stack, ret, 0);
+                return rendered_template(ret);
+            }
+
+            /// Output a returnable template from this mustache template
+            std::string render_string() const
             {
                 context empty_ctx;
                 std::vector<context*> stack;
@@ -349,7 +390,9 @@ namespace crow
                 render_internal(0, fragments_.size() - 1, stack, ret, 0);
                 return ret;
             }
-            std::string render(context& ctx) const
+
+            /// Apply the values from the context provided and output a returnable template from this mustache template
+            std::string render_string(context& ctx) const
             {
                 std::vector<context*> stack;
                 stack.emplace_back(&ctx);
@@ -637,11 +680,21 @@ namespace crow
             return detail::get_loader_ref()(filename_sanitized);
         }
 
+        inline std::string load_text_unsafe(const std::string& filename)
+        {
+            return detail::get_loader_ref()(filename);
+        }
+
         inline template_t load(const std::string& filename)
         {
             std::string filename_sanitized(filename);
             utility::sanitize_filename(filename_sanitized);
             return compile(detail::get_loader_ref()(filename_sanitized));
+        }
+
+        inline template_t load_unsafe(const std::string& filename)
+        {
+            return compile(detail::get_loader_ref()(filename));
         }
     } // namespace mustache
 } // namespace crow
