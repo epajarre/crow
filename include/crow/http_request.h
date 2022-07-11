@@ -1,6 +1,9 @@
 #pragma once
 
-#include <boost/asio.hpp>
+#ifndef ASIO_STANDALONE
+#define ASIO_STANDALONE
+#endif
+#include <asio.hpp>
 
 #include "crow/common.h"
 #include "crow/ci_map.h"
@@ -35,7 +38,7 @@ namespace crow
 
         void* middleware_context{};
         void* middleware_container{};
-        boost::asio::io_service* io_service{};
+        asio::io_service* io_service{};
 
         /// Construct an empty request. (sets the method to `GET`)
         request():
@@ -60,6 +63,15 @@ namespace crow
         bool check_version(unsigned char major, unsigned char minor) const
         {
             return http_ver_major == major && http_ver_minor == minor;
+        }
+
+        /// Get the body as parameters in QS format.
+
+        ///
+        /// This is meant to be used with requests of type "application/x-www-form-urlencoded"
+        const query_string get_body_params()
+        {
+            return query_string(body, false);
         }
 
         /// Send data to whoever made this request with a completion handler and return immediately.

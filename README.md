@@ -12,7 +12,7 @@
 
 ## Description
 
-Crow is a C++ microframework for running web services. It uses routing similar to Python's Flask which makes it easy to use. It is also extremely fast, beating multiple existing C++ frameworks as well as non C++ frameworks.
+Crow is a C++ framework for creating HTTP or Websocket web services. It uses routing similar to Python's Flask which makes it easy to use. It is also extremely fast, beating multiple existing C++ frameworks as well as non C++ frameworks.
 
 ### Features
  - Easy Routing (similar to flask).
@@ -27,16 +27,17 @@ Crow is a C++ microframework for running web services. It uses routing similar t
  - Uses modern C++ (11/14)
 
 ### Still in development
+ - [Async support](https://github.com/CrowCpp/Crow/issues/258)
  - [HTTP/2 support](https://github.com/crowcpp/crow/issues/8)
 
 ## Documentation
 Available [here](https://crowcpp.org).
 
+> **Warning**
+> 
+> If you are using Crow v0.3, then you have to put `#define CROW_MAIN` at the top of one and only one source file.
+
 ## Examples
-
-#### Disclaimer
-
-If you are using version v0.3, then you have to put `#define CROW_MAIN` at the top of one and only one source file.
 
 #### Hello World
 ```cpp
@@ -102,7 +103,7 @@ CROW_ROUTE(app, "/add_json")
 More examples can be found [here](https://github.com/crowcpp/crow/tree/master/examples).
 
 ## Setting Up / Building
-Available [here](https://crowcpp.org/getting_started/setup).
+Available [here](https://crowcpp.org/master/getting_started/setup).
 
 ## Disclaimer
 CrowCpp/Crow is a project based on ipkn/crow. Neither CrowCpp, it's members, or this project have been associated with, or endorsed or supported by ipkn (Jaeseung Ha) in any way. We do use ipkn/crow's source code under the BSD-3 clause license and sometimes refer to the public comments available on the github repository. But we do not in any way claim to be associated with or in contact with ipkn (Jaeseung Ha) regarding CrowCpp or CrowCpp/Crow

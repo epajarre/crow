@@ -5,8 +5,10 @@
 #include <tuple>
 #include <type_traits>
 #include <cstring>
+#include <cctype>
 #include <functional>
 #include <string>
+#include <sstream>
 #include <unordered_map>
 
 #include "crow/settings.h"
@@ -22,6 +24,7 @@
 
 namespace crow
 {
+    /// @cond SKIP
     namespace black_magic
     {
 #ifndef CROW_MSVC_WORKAROUND
@@ -232,6 +235,8 @@ namespace crow
             template<template<typename... Args> class U>
             using rebind = U<T...>;
         };
+
+        // Check whether the template function can be called with specific arguments
         template<typename F, typename Set>
         struct CallHelper;
         template<typename F, typename... Args>
@@ -262,18 +267,45 @@ namespace crow
         struct has_type<T, std::tuple<T, Ts...>> : std::true_type
         {};
 
-        // Check F is callable with Args
-        template<typename F, typename... Args>
-        struct is_callable
+        // Find index of type in tuple
+        template<class T, class Tuple>
+        struct tuple_index;
+
+        template<class T, class... Types>
+        struct tuple_index<T, std::tuple<T, Types...>>
         {
-            template<typename F2, typename... Args2>
-            static std::true_type __test(decltype(std::declval<F2>()(std::declval<Args2>()...))*);
-
-            template<typename F2, typename... Args2>
-            static std::false_type __test(...);
-
-            static constexpr bool value = decltype(__test<F, Args...>(nullptr))::value;
+            static const int value = 0;
         };
+
+        template<class T, class U, class... Types>
+        struct tuple_index<T, std::tuple<U, Types...>>
+        {
+            static const int value = 1 + tuple_index<T, std::tuple<Types...>>::value;
+        };
+
+        // Extract element from forward tuple or get default
+#ifdef CROW_CAN_USE_CPP14
+        template<typename T, typename Tup>
+        typename std::enable_if<has_type<T&, Tup>::value, typename std::decay<T>::type&&>::type
+          tuple_extract(Tup& tup)
+        {
+            return std::move(std::get<T&>(tup));
+        }
+#else
+        template<typename T, typename Tup>
+        typename std::enable_if<has_type<T&, Tup>::value, T&&>::type
+          tuple_extract(Tup& tup)
+        {
+            return std::move(std::get<tuple_index<T&, Tup>::value>(tup));
+        }
+#endif
+
+        template<typename T, typename Tup>
+        typename std::enable_if<!has_type<T&, Tup>::value, T>::type
+          tuple_extract(Tup&)
+        {
+            return T{};
+        }
 
         // Kind of fold expressions in C++11
         template<bool...>
@@ -470,7 +502,6 @@ namespace crow
         {
             static constexpr auto value = get_index_of_element_from_tuple_by_type_impl<T, N + 1, Args...>::value;
         };
-
     } // namespace detail
 
     namespace utility
@@ -528,6 +559,7 @@ namespace crow
             template<size_t i>
             using arg = typename std::tuple_element<i, std::tuple<Args...>>::type;
         };
+        /// @endcond
 
         inline static std::string base64encode(const unsigned char* data, size_t size, const char* key = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
         {
@@ -749,5 +781,90 @@ namespace crow
             }
         }
 
+        /**
+         * @brief Checks two string for equality.
+         * Always returns false if strings differ in size.
+         * Defaults to case-insensitive comparison.
+         */
+        inline static bool string_equals(const std::string& l, const std::string& r, bool case_sensitive = false)
+        {
+            if (l.length() != r.length())
+                return false;
+
+            for (size_t i = 0; i < l.length(); i++)
+            {
+                if (case_sensitive)
+                {
+                    if (l[i] != r[i])
+                        return false;
+                }
+                else
+                {
+                    if (std::toupper(l[i]) != std::toupper(r[i]))
+                        return false;
+                }
+            }
+
+            return true;
+        }
+
+        template<typename T, typename U>
+        inline static T lexical_cast(const U& v)
+        {
+            std::stringstream stream;
+            T res;
+
+            stream << v;
+            stream >> res;
+
+            return res;
+        }
+
+        template<typename T>
+        inline static T lexical_cast(const char* v, size_t count)
+        {
+            std::stringstream stream;
+            T res;
+
+            stream.write(v, count);
+            stream >> res;
+
+            return res;
+        }
+
+
+        /// Return a copy of the given string with its
+        /// leading and trailing whitespaces removed.
+        inline static std::string trim(const std::string& v)
+        {
+            if (v.empty())
+                return "";
+
+            size_t begin = 0, end = v.length();
+
+            size_t i;
+            for (i = 0; i < v.length(); i++)
+            {
+                if (!std::isspace(v[i]))
+                {
+                    begin = i;
+                    break;
+                }
+            }
+
+            if (i == v.length())
+                return "";
+
+            for (i = v.length(); i > 0; i--)
+            {
+                if (!std::isspace(v[i - 1]))
+                {
+                    end = i;
+                    break;
+                }
+            }
+
+            return v.substr(begin, end - begin);
+        }
     } // namespace utility
 } // namespace crow

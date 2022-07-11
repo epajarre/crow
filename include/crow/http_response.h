@@ -4,7 +4,15 @@
 #include <ios>
 #include <fstream>
 #include <sstream>
+// S_ISREG is not defined for windows
+// This defines it like suggested in https://stackoverflow.com/a/62371749
+#if defined(_MSC_VER)
+#define _CRT_INTERNAL_NONSTDC_NAMES 1
+#endif
 #include <sys/stat.h>
+#if !defined(S_ISREG) && defined(S_IFMT) && defined(S_IFREG)
+#define S_ISREG(m) (((m)&S_IFMT) == S_IFREG)
+#endif
 
 #include "crow/http_request.h"
 #include "crow/ci_map.h"
@@ -19,11 +27,7 @@ namespace crow
     template<typename Adaptor, typename Handler, typename... Middlewares>
     class Connection;
 
-    namespace detail
-    {
-        template<typename F, typename App, typename... Middlewares>
-        struct handler_middleware_wrapper;
-    } // namespace detail
+    class Router;
 
     /// HTTP response
     struct response
@@ -31,8 +35,7 @@ namespace crow
         template<typename Adaptor, typename Handler, typename... Middlewares>
         friend class crow::Connection;
 
-        template<typename F, typename App, typename... Middlewares>
-        friend struct crow::detail::handler_middleware_wrapper;
+        friend class Router;
 
         int code{200};    ///< The Status code for the response.
         std::string body; ///< The actual payload containing the response data.
@@ -83,6 +86,11 @@ namespace crow
         {
             body = value.dump();
             set_header("Content-Type", value.content_type);
+        }
+        response(int code, returnable&& value):
+          code(code), body(std::move(value.dump()))
+        {
+            set_header("Content-Type", std::move(value.content_type));
         }
 
         response(response&& r)
@@ -238,28 +246,30 @@ namespace crow
 #ifdef CROW_ENABLE_COMPRESSION
             compressed = false;
 #endif
-            if (file_info.statResult == 0)
+            if (file_info.statResult == 0 && S_ISREG(file_info.statbuf.st_mode))
             {
                 std::size_t last_dot = path.find_last_of(".");
                 std::string extension = path.substr(last_dot + 1);
-                std::string mimeType = "";
                 code = 200;
-                this->add_header("Content-length", std::to_string(file_info.statbuf.st_size));
+                this->add_header("Content-Length", std::to_string(file_info.statbuf.st_size));
 
-                if (extension != "")
+                if (!extension.empty())
                 {
-                    mimeType = mime_types.at(extension);
-                    if (mimeType != "")
-                        this->add_header("Content-Type", mimeType);
+                    const auto mimeType = mime_types.find(extension);
+                    if (mimeType != mime_types.end())
+                    {
+                        this->add_header("Content-Type", mimeType->second);
+                    }
                     else
-                        this->add_header("content-Type", "text/plain");
+                    {
+                        this->add_header("Content-Type", "text/plain");
+                    }
                 }
             }
             else
             {
                 code = 404;
                 file_info.path.clear();
-                this->end();
             }
         }
 

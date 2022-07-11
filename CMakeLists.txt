@@ -8,6 +8,9 @@ project(Crow
 	LANGUAGES CXX
 )
 
+# Make sure Findasio.cmake module is found
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
+
 # Check if Crow is the main project
 set(CROW_IS_MAIN_PROJECT OFF)
 if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
@@ -37,8 +40,8 @@ option(CROW_BUILD_TESTS        "Build the tests in the project"         ${CROW_I
 option(CROW_AMALGAMATE         "Combine all headers into one"           OFF)
 option(CROW_INSTALL            "Add install step for Crow"              ON )
 
-option(CROW_ENABLE_SSL         "Enable SSL capabilities (OpenSSL)"      OFF)
-option(CROW_ENABLE_COMPRESSION "Enable compression capabilities (ZLIB)" OFF)
+# Possible values: ssl, compression
+option(CROW_FEATURES					 "Enable features extending Crow's abilities" "")
 
 #####################################
 # Define Targets
@@ -52,22 +55,20 @@ target_include_directories(Crow
 		$<INSTALL_INTERFACE:include>
 )
 
-find_package(Boost 1.64 COMPONENTS system date_time REQUIRED)
-find_package(Threads REQUIRED)
+find_package(asio REQUIRED)
 
 target_link_libraries(Crow
 	INTERFACE
-		Boost::boost Boost::system Boost::date_time
-		Threads::Threads
+		asio::asio
 )
 
-if(CROW_ENABLE_COMPRESSION)
+if("compression" IN_LIST CROW_FEATURES)
 	find_package(ZLIB REQUIRED)
 	target_link_libraries(Crow INTERFACE ZLIB::ZLIB)
 	target_compile_definitions(Crow INTERFACE CROW_ENABLE_COMPRESSION)
 endif()
 
-if(CROW_ENABLE_SSL)
+if("ssl" IN_LIST CROW_FEATURES)
 	find_package(OpenSSL REQUIRED)
 	target_link_libraries(Crow INTERFACE OpenSSL::SSL)
 	target_compile_definitions(Crow INTERFACE CROW_ENABLE_SSL)
@@ -92,11 +93,11 @@ endif()
 
 # Tests
 if(NOT MSVC AND CROW_BUILD_TESTS)
-	if(NOT CROW_ENABLE_COMPRESSION)
-		message(STATUS "Compression tests are omitted. (Configure with CROW_ENABLE_COMPRESSION=ON to enable them)")
+	if(NOT "compression" IN_LIST CROW_FEATURES)
+		message(STATUS "Compression tests are omitted. (Configure with CROW_FEATURES containing 'compression' to enable them)")
 	endif()
-	if(NOT CROW_ENABLE_SSL)
-		message(STATUS "SSL tests are omitted. (Configure with CROW_ENABLE_SSL=ON to enable them)")
+	if(NOT "ssl" IN_LIST CROW_FEATURES)
+		message(STATUS "SSL tests are omitted. (Configure with CROW_FEATURES containing 'ssl' to enable them)")
 	else()
 		add_test(NAME ssl_test COMMAND ${CMAKE_CURRENT_BINARY_DIR}/tests/ssl/ssltest)
 	endif()
@@ -127,6 +128,7 @@ if(CROW_INSTALL)
 		INSTALL_DESTINATION lib/cmake/Crow
 	)
 	install(FILES
+		"${CMAKE_CURRENT_SOURCE_DIR}/cmake/Findasio.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/CrowConfig.cmake"
     DESTINATION lib/cmake/Crow
   )

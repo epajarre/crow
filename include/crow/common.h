@@ -95,7 +95,7 @@ namespace crow
         Subscribe,
         Unsubscribe,
 
-        Mkcalendar,
+        MkCalendar,
 
         Link,
         Unlink,
@@ -205,6 +205,7 @@ namespace crow
         NOT_IMPLEMENTED               = 501,
         BAD_GATEWAY                   = 502,
         SERVICE_UNAVAILABLE           = 503,
+        GATEWAY_TIMEOUT               = 504,
         VARIANT_ALSO_NEGOTIATES       = 506
     };
 
@@ -221,6 +222,7 @@ namespace crow
         MAX
     };
 
+    /// @cond SKIP
     struct routing_params
     {
         std::vector<int64_t> int_params;
@@ -272,11 +274,12 @@ namespace crow
     {
         return string_params[index];
     }
+    /// @endcond
 } // namespace crow
 
 // clang-format off
 #ifndef CROW_MSVC_WORKAROUND
-constexpr crow::HTTPMethod operator"" _method(const char* str, size_t /*len*/)
+constexpr crow::HTTPMethod method_from_string(const char* str)
 {
     return crow::black_magic::is_equ_p(str, "GET", 3)    ? crow::HTTPMethod::Get :
            crow::black_magic::is_equ_p(str, "DELETE", 6) ? crow::HTTPMethod::Delete :
@@ -313,13 +316,18 @@ constexpr crow::HTTPMethod operator"" _method(const char* str, size_t /*len*/)
            crow::black_magic::is_equ_p(str, "SUBSCRIBE", 9)    ? crow::HTTPMethod::Subscribe :
            crow::black_magic::is_equ_p(str, "UNSUBSCRIBE", 11) ? crow::HTTPMethod::Unsubscribe :
 
-           crow::black_magic::is_equ_p(str, "MKCALENDAR", 10) ? crow::HTTPMethod::Mkcalendar :
+           crow::black_magic::is_equ_p(str, "MKCALENDAR", 10) ? crow::HTTPMethod::MkCalendar :
 
            crow::black_magic::is_equ_p(str, "LINK", 4)   ? crow::HTTPMethod::Link :
            crow::black_magic::is_equ_p(str, "UNLINK", 6) ? crow::HTTPMethod::Unlink :
 
            crow::black_magic::is_equ_p(str, "SOURCE", 6) ? crow::HTTPMethod::Source :
                                                            throw std::runtime_error("invalid http method");
+}
+
+constexpr crow::HTTPMethod operator"" _method(const char* str, size_t /*len*/)
+{
+    return method_from_string( str );
 }
 #endif
 // clang-format on

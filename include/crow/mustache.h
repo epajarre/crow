@@ -258,7 +258,7 @@ namespace crow
                                 }
                                 break;
                                 default:
-                                    throw std::runtime_error("not implemented tag type" + boost::lexical_cast<std::string>(static_cast<int>(ctx.t())));
+                                    throw std::runtime_error("not implemented tag type" + utility::lexical_cast<std::string>(static_cast<int>(ctx.t())));
                             }
                         }
                         break;
@@ -324,7 +324,7 @@ namespace crow
                                     current = action.pos;
                                     break;
                                 default:
-                                    throw std::runtime_error("{{#: not implemented context type: " + boost::lexical_cast<std::string>(static_cast<int>(ctx.t())));
+                                    throw std::runtime_error("{{#: not implemented context type: " + utility::lexical_cast<std::string>(static_cast<int>(ctx.t())));
                                     break;
                             }
                             break;
@@ -333,7 +333,7 @@ namespace crow
                             stack.pop_back();
                             break;
                         default:
-                            throw std::runtime_error("not implemented " + boost::lexical_cast<std::string>(static_cast<int>(action.t)));
+                            throw std::runtime_error("not implemented " + utility::lexical_cast<std::string>(static_cast<int>(action.t)));
                     }
                     current++;
                 }
@@ -377,6 +377,12 @@ namespace crow
                 std::string ret;
                 render_internal(0, fragments_.size() - 1, stack, ret, 0);
                 return rendered_template(ret);
+            }
+
+            /// Apply the values from the context provided and output a returnable template from this mustache template
+            rendered_template render(context&& ctx) const
+            {
+                return render(ctx);
             }
 
             /// Output a returnable template from this mustache template
@@ -631,6 +637,13 @@ namespace crow
                 static std::string template_base_directory = "templates";
                 return template_base_directory;
             }
+
+            /// A base directory not related to any blueprint
+            inline std::string& get_global_template_base_directory_ref()
+            {
+                static std::string template_base_directory = "templates";
+                return template_base_directory;
+            }
         } // namespace detail
 
         inline std::string default_loader(const std::string& filename)
@@ -660,6 +673,17 @@ namespace crow
         inline void set_base(const std::string& path)
         {
             auto& base = detail::get_template_base_directory_ref();
+            base = path;
+            if (base.back() != '\\' &&
+                base.back() != '/')
+            {
+                base += '/';
+            }
+        }
+
+        inline void set_global_base(const std::string& path)
+        {
+            auto& base = detail::get_global_template_base_directory_ref();
             base = path;
             if (base.back() != '\\' &&
                 base.back() != '/')

@@ -8,10 +8,12 @@
 #include <vector>
 #include <thread>
 #include <chrono>
+#include <type_traits>
 
 #include "catch.hpp"
 #include "crow.h"
 #include "crow/middlewares/cookie_parser.h"
+#include "crow/middlewares/cors.h"
 
 using namespace std;
 using namespace crow;
@@ -305,6 +307,10 @@ TEST_CASE("http_method")
             return "1";
     });
 
+    CROW_ROUTE(app, "/head_only")
+      .methods("HEAD"_method)([](const request& /*req*/) {
+          return response{202};
+      });
     CROW_ROUTE(app, "/get_only")
       .methods("GET"_method)([](const request& /*req*/) {
           return "get";
@@ -348,6 +354,18 @@ TEST_CASE("http_method")
         app.handle(req, res);
 
         CHECK("1" == res.body);
+    }
+
+    {
+        request req;
+        response res;
+
+        req.url = "/head_only";
+        req.method = "HEAD"_method;
+        app.handle(req, res);
+
+        CHECK(202 == res.code);
+        CHECK("" == res.body);
     }
 
     {
@@ -450,6 +468,18 @@ TEST_CASE("http_method")
         CHECK(204 == res.code);
         CHECK("OPTIONS, HEAD, GET, POST, PATCH, PURGE" == res.get_header_value("Allow"));
     }
+
+    {
+        request req;
+        response res;
+
+        req.url = "/head_only";
+        req.method = "OPTIONS"_method;
+        app.handle(req, res);
+
+        CHECK(204 == res.code);
+        CHECK("OPTIONS, HEAD" == res.get_header_value("Allow"));
+    }
 } // http_method
 
 TEST_CASE("server_handling_error_request")
@@ -462,10 +492,7 @@ TEST_CASE("server_handling_error_request")
     });
     // Server<SimpleApp> server(&app, LOCALHOST_ADDRESS, 45451);
     // auto _ = async(launch::async, [&]{server.run();});
-    auto _ = async(launch::async,
-                   [&] {
-                       app.bindaddr(LOCALHOST_ADDRESS).port(45451).run();
-                   });
+    auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45451).run_async();
     app.wait_for_server_start();
     std::string sendmsg = "POX";
     asio::io_service is;
@@ -497,10 +524,7 @@ TEST_CASE("server_handling_error_request_http_version")
     ([] {
         return "A";
     });
-    auto _ = async(launch::async,
-                   [&] {
-                       app.bindaddr(LOCALHOST_ADDRESS).port(45451).run();
-                   });
+    auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45451).run_async();
     app.wait_for_server_start();
     std::string sendmsg = "POST /\r\nContent-Length:3\r\nX-HeaderTest: 123\r\n\r\nA=B\r\n";
     asio::io_service is;
@@ -537,14 +561,8 @@ TEST_CASE("multi_server")
         return "B";
     });
 
-    auto _ = async(launch::async,
-                   [&] {
-                       app1.bindaddr(LOCALHOST_ADDRESS).port(45451).run();
-                   });
-    auto _2 = async(launch::async,
-                    [&] {
-                        app2.bindaddr(LOCALHOST_ADDRESS).port(45452).run();
-                    });
+    auto _ = app1.bindaddr(LOCALHOST_ADDRESS).port(45451).run_async();
+    auto _2 = app2.bindaddr(LOCALHOST_ADDRESS).port(45452).run_async();
     app1.wait_for_server_start();
     app2.wait_for_server_start();
 
@@ -581,6 +599,61 @@ TEST_CASE("multi_server")
     app1.stop();
     app2.stop();
 } // multi_server
+
+
+TEST_CASE("undefined_status_code")
+{
+    SimpleApp app;
+    CROW_ROUTE(app, "/get123")
+    ([] {
+        //this status does not exists statusCodes map defined in include/crow/http_connection.h
+        const int undefinedStatusCode = 123;
+        return response(undefinedStatusCode, "this should return 500");
+    });
+
+    CROW_ROUTE(app, "/get200")
+    ([] {
+        return response(200, "ok");
+    });
+
+    auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45471).run_async();
+    app.wait_for_server_start();
+
+    asio::io_service is;
+    auto sendRequestAndGetStatusCode = [&](const std::string& route) -> unsigned {
+        asio::ip::tcp::socket socket(is);
+        socket.connect(asio::ip::tcp::endpoint(asio::ip::address::from_string(LOCALHOST_ADDRESS), app.port()));
+
+        asio::streambuf request;
+        std::ostream request_stream(&request);
+        request_stream << "GET " << route << " HTTP/1.0\r\n";
+        request_stream << "Host: " << LOCALHOST_ADDRESS << "\r\n";
+        request_stream << "Accept: */*\r\n";
+        request_stream << "Connection: close\r\n\r\n";
+
+        // Send the request.
+        asio::write(socket, request);
+
+        asio::streambuf response;
+        asio::read_until(socket, response, "\r\n");
+
+        std::istream response_stream(&response);
+        std::string http_version;
+        response_stream >> http_version;
+        unsigned status_code = 0;
+        response_stream >> status_code;
+
+        return status_code;
+    };
+
+    unsigned statusCode = sendRequestAndGetStatusCode("/get200");
+    CHECK(statusCode == 200);
+
+    statusCode = sendRequestAndGetStatusCode("/get123");
+    CHECK(statusCode == 500);
+
+    app.stop();
+} // undefined_status_code
 
 TEST_CASE("json_read")
 {
@@ -714,7 +787,7 @@ TEST_CASE("json_read_real")
     for (auto x : v)
     {
         CROW_LOG_DEBUG << x;
-        CHECK(json::load(x).d() == boost::lexical_cast<double>(x));
+        CHECK(json::load(x).d() == utility::lexical_cast<double>(x));
     }
 
     auto ret = json::load(
@@ -1264,7 +1337,11 @@ struct IntSettingMiddleware
 
 std::vector<std::string> test_middleware_context_vector;
 
-struct FirstMW
+struct empty_type
+{};
+
+template<bool Local>
+struct FirstMW : public std::conditional<Local, crow::ILocalMiddleware, empty_type>::type
 {
     struct context
     {
@@ -1283,38 +1360,40 @@ struct FirstMW
     }
 };
 
-struct SecondMW
+template<bool Local>
+struct SecondMW : public std::conditional<Local, crow::ILocalMiddleware, empty_type>::type
 {
     struct context
     {};
     template<typename AllContext>
     void before_handle(request& req, response& res, context&, AllContext& all_ctx)
     {
-        all_ctx.template get<FirstMW>().v.push_back("2 before");
-        if (req.url == "/break") res.end();
+        all_ctx.template get<FirstMW<Local>>().v.push_back("2 before");
+        if (req.url.find("/break") != std::string::npos) res.end();
     }
 
     template<typename AllContext>
     void after_handle(request&, response&, context&, AllContext& all_ctx)
     {
-        all_ctx.template get<FirstMW>().v.push_back("2 after");
+        all_ctx.template get<FirstMW<Local>>().v.push_back("2 after");
     }
 };
 
-struct ThirdMW
+template<bool Local>
+struct ThirdMW : public std::conditional<Local, crow::ILocalMiddleware, empty_type>::type
 {
     struct context
     {};
     template<typename AllContext>
     void before_handle(request&, response&, context&, AllContext& all_ctx)
     {
-        all_ctx.template get<FirstMW>().v.push_back("3 before");
+        all_ctx.template get<FirstMW<Local>>().v.push_back("3 before");
     }
 
     template<typename AllContext>
     void after_handle(request&, response&, context&, AllContext& all_ctx)
     {
-        all_ctx.template get<FirstMW>().v.push_back("3 after");
+        all_ctx.template get<FirstMW<Local>>().v.push_back("3 after");
     }
 };
 
@@ -1327,7 +1406,7 @@ TEST_CASE("middleware_context")
     // or change the order of FirstMW and SecondMW
     // App<IntSettingMiddleware, SecondMW, FirstMW> app;
 
-    App<IntSettingMiddleware, FirstMW, SecondMW, ThirdMW> app;
+    App<IntSettingMiddleware, FirstMW<false>, SecondMW<false>, ThirdMW<false>> app;
 
     int x{};
     CROW_ROUTE(app, "/")
@@ -1337,7 +1416,7 @@ TEST_CASE("middleware_context")
             x = ctx.val;
         }
         {
-            auto& ctx = app.get_context<FirstMW>(req);
+            auto& ctx = app.get_context<FirstMW<false>>(req);
             ctx.v.push_back("handle");
         }
 
@@ -1346,17 +1425,14 @@ TEST_CASE("middleware_context")
     CROW_ROUTE(app, "/break")
     ([&](const request& req) {
         {
-            auto& ctx = app.get_context<FirstMW>(req);
+            auto& ctx = app.get_context<FirstMW<false>>(req);
             ctx.v.push_back("handle");
         }
 
         return "";
     });
 
-    auto _ = async(launch::async,
-                   [&] {
-                       app.bindaddr(LOCALHOST_ADDRESS).port(45451).run();
-                   });
+    auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45451).run_async();
     app.wait_for_server_start();
     std::string sendmsg = "GET /\r\n\r\n";
     asio::io_service is;
@@ -1437,10 +1513,7 @@ TEST_CASE("local_middleware")
 
     app.validate();
 
-    auto _ = async(launch::async,
-                   [&] {
-                       app.bindaddr(LOCALHOST_ADDRESS).port(45451).run();
-                   });
+    auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45451).run_async();
     app.wait_for_server_start();
     asio::io_service is;
 
@@ -1469,7 +1542,107 @@ TEST_CASE("local_middleware")
     app.stop();
 } // local_middleware
 
-TEST_CASE("middleware_cookieparser")
+struct OnlyMoveConstructor
+{
+    OnlyMoveConstructor(int) {}
+    OnlyMoveConstructor(const OnlyMoveConstructor&) = delete;
+    OnlyMoveConstructor(OnlyMoveConstructor&&) = default;
+};
+
+TEST_CASE("app_constructor")
+{
+    App<NullMiddleware, OnlyMoveConstructor, FirstMW<false>, SecondMW<false>>
+      app1(OnlyMoveConstructor(1), SecondMW<false>{});
+    App<NullMiddleware, OnlyMoveConstructor, FirstMW<false>, SecondMW<false>>
+      app2(FirstMW<false>{}, OnlyMoveConstructor(1));
+} // app_constructor
+
+TEST_CASE("middleware_blueprint")
+{
+    // Same logic as middleware_context, but middleware is added with blueprints
+    static char buf[2048];
+
+    App<FirstMW<true>, SecondMW<true>, ThirdMW<true>> app;
+
+    Blueprint bp1("a", "c1", "c1");
+    bp1.CROW_MIDDLEWARES(app, FirstMW<true>);
+
+    Blueprint bp2("b", "c2", "c2");
+    bp2.CROW_MIDDLEWARES(app, SecondMW<true>);
+
+    Blueprint bp3("c", "c3", "c3");
+
+    CROW_BP_ROUTE(bp2, "/")
+      .CROW_MIDDLEWARES(app, ThirdMW<true>)([&app](const crow::request& req) {
+          {
+              auto& ctx = app.get_context<FirstMW<true>>(req);
+              ctx.v.push_back("handle");
+          }
+          return "";
+      });
+
+    CROW_BP_ROUTE(bp3, "/break")
+      .CROW_MIDDLEWARES(app, SecondMW<true>, ThirdMW<true>)([&app](const crow::request& req) {
+          {
+              auto& ctx = app.get_context<FirstMW<true>>(req);
+              ctx.v.push_back("handle");
+          }
+          return "";
+      });
+
+    bp1.register_blueprint(bp3);
+    bp1.register_blueprint(bp2);
+    app.register_blueprint(bp1);
+
+    auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45451).run_async();
+    app.wait_for_server_start();
+
+    asio::io_service is;
+    {
+        asio::ip::tcp::socket c(is);
+        c.connect(asio::ip::tcp::endpoint(
+          asio::ip::address::from_string(LOCALHOST_ADDRESS), 45451));
+
+        c.send(asio::buffer("GET /a/b/\r\n\r\n"));
+
+        c.receive(asio::buffer(buf, 2048));
+        c.close();
+    }
+    {
+        auto& out = test_middleware_context_vector;
+        CHECK(7 == out.size());
+        CHECK("1 before" == out[0]);
+        CHECK("2 before" == out[1]);
+        CHECK("3 before" == out[2]);
+        CHECK("handle" == out[3]);
+        CHECK("3 after" == out[4]);
+        CHECK("2 after" == out[5]);
+        CHECK("1 after" == out[6]);
+    }
+    {
+        asio::ip::tcp::socket c(is);
+        c.connect(asio::ip::tcp::endpoint(
+          asio::ip::address::from_string(LOCALHOST_ADDRESS), 45451));
+
+        c.send(asio::buffer("GET /a/c/break\r\n\r\n"));
+
+        c.receive(asio::buffer(buf, 2048));
+        c.close();
+    }
+    {
+        auto& out = test_middleware_context_vector;
+        CHECK(4 == out.size());
+        CHECK("1 before" == out[0]);
+        CHECK("2 before" == out[1]);
+        CHECK("2 after" == out[2]);
+        CHECK("1 after" == out[3]);
+    }
+
+    app.stop();
+} // middleware_blueprint
+
+
+TEST_CASE("middleware_cookieparser_parse")
 {
     static char buf[2048];
 
@@ -1493,10 +1666,7 @@ TEST_CASE("middleware_cookieparser")
         return "";
     });
 
-    auto _ = async(launch::async,
-                   [&] {
-                       app.bindaddr(LOCALHOST_ADDRESS).port(45451).run();
-                   });
+    auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45451).run_async();
     app.wait_for_server_start();
     std::string sendmsg =
       "GET /\r\nCookie: key1=value1; key2=\"val=ue2\"; key3=\"val\"ue3\"; "
@@ -1519,7 +1689,141 @@ TEST_CASE("middleware_cookieparser")
         CHECK("val\"ue4" == value4);
     }
     app.stop();
-} // middleware_cookieparser
+} // middleware_cookieparser_parse
+
+
+TEST_CASE("middleware_cookieparser_format")
+{
+    using Cookie = CookieParser::Cookie;
+
+    auto valid = [](const std::string& s, int parts) {
+        return std::count(s.begin(), s.end(), ';') == parts - 1;
+    };
+
+    // basic
+    {
+        auto c = Cookie("key", "value");
+        auto s = c.dump();
+        CHECK(valid(s, 1));
+        CHECK(s == "key=value");
+    }
+    // max-age + domain
+    {
+        auto c = Cookie("key", "value")
+                   .max_age(123)
+                   .domain("example.com");
+        auto s = c.dump();
+        CHECK(valid(s, 3));
+        CHECK(s.find("key=value") != std::string::npos);
+        CHECK(s.find("Max-Age=123") != std::string::npos);
+        CHECK(s.find("Domain=example.com") != std::string::npos);
+    }
+    // samesite + secure
+    {
+        auto c = Cookie("key", "value")
+                   .secure()
+                   .same_site(Cookie::SameSitePolicy::None);
+        auto s = c.dump();
+        CHECK(valid(s, 3));
+        CHECK(s.find("Secure") != std::string::npos);
+        CHECK(s.find("SameSite=None") != std::string::npos);
+    }
+    // expires
+    {
+        std::time_t tp;
+        std::time(&tp);
+        std::tm* tm = std::gmtime(&tp);
+        std::istringstream ss("2000-11-01 23:59:59");
+        ss >> std::get_time(tm, "%Y-%m-%d %H:%M:%S");
+        std::mktime(tm);
+
+        auto c = Cookie("key", "value")
+                   .expires(*tm);
+        auto s = c.dump();
+        CHECK(valid(s, 2));
+        CHECK(s.find("Expires=Wed, 01 Nov 2000 23:59:59 GMT") != std::string::npos);
+    }
+} // middleware_cookieparser_format
+
+TEST_CASE("middleware_cors")
+{
+    static char buf[5012];
+
+    App<crow::CORSHandler> app;
+
+    auto& cors = app.get_middleware<crow::CORSHandler>();
+    // clang-format off
+    cors
+      .prefix("/origin")
+        .origin("test.test")
+      .prefix("/nocors")
+        .ignore();
+    // clang-format on
+
+    CROW_ROUTE(app, "/")
+    ([&](const request&) {
+        return "-";
+    });
+
+    CROW_ROUTE(app, "/origin")
+    ([&](const request&) {
+        return "-";
+    });
+
+    CROW_ROUTE(app, "/nocors/path")
+    ([&](const request&) {
+        return "-";
+    });
+
+    auto _ = async(launch::async,
+                   [&] {
+                       app.bindaddr(LOCALHOST_ADDRESS).port(45451).run();
+                   });
+
+    app.wait_for_server_start();
+    asio::io_service is;
+
+    {
+        asio::ip::tcp::socket c(is);
+        c.connect(asio::ip::tcp::endpoint(
+          asio::ip::address::from_string(LOCALHOST_ADDRESS), 45451));
+
+        c.send(asio::buffer("GET /\r\n\r\n"));
+
+        c.receive(asio::buffer(buf, 2048));
+        c.close();
+
+        CHECK(std::string(buf).find("Access-Control-Allow-Origin: *") != std::string::npos);
+    }
+
+    {
+        asio::ip::tcp::socket c(is);
+        c.connect(asio::ip::tcp::endpoint(
+          asio::ip::address::from_string(LOCALHOST_ADDRESS), 45451));
+
+        c.send(asio::buffer("GET /origin\r\n\r\n"));
+
+        c.receive(asio::buffer(buf, 2048));
+        c.close();
+
+        CHECK(std::string(buf).find("Access-Control-Allow-Origin: test.test") != std::string::npos);
+    }
+
+    {
+        asio::ip::tcp::socket c(is);
+        c.connect(asio::ip::tcp::endpoint(
+          asio::ip::address::from_string(LOCALHOST_ADDRESS), 45451));
+
+        c.send(asio::buffer("GET /nocors/path\r\n\r\n"));
+
+        c.receive(asio::buffer(buf, 2048));
+        c.close();
+
+        CHECK(std::string(buf).find("Access-Control-Allow-Origin:") == std::string::npos);
+    }
+
+    app.stop();
+} // middleware_cors
 
 TEST_CASE("bug_quick_repeated_request")
 {
@@ -1532,10 +1836,7 @@ TEST_CASE("bug_quick_repeated_request")
         return "hello";
     });
 
-    auto _ = async(launch::async,
-                   [&] {
-                       app.bindaddr(LOCALHOST_ADDRESS).port(45451).run();
-                   });
+    auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45451).run_async();
     app.wait_for_server_start();
     std::string sendmsg = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
     asio::io_service is;
@@ -1578,10 +1879,7 @@ TEST_CASE("simple_url_params")
 
     /// params?h=1&foo=bar&lol&count[]=1&count[]=4&pew=5.2
 
-    auto _ = async(launch::async,
-                   [&] {
-                       app.bindaddr(LOCALHOST_ADDRESS).port(45451).run();
-                   });
+    auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45451).run_async();
     app.wait_for_server_start();
     asio::io_service is;
     std::string sendmsg;
@@ -1672,10 +1970,10 @@ TEST_CASE("simple_url_params")
         c.receive(asio::buffer(buf, 2048));
         c.close();
 
-        CHECK(boost::lexical_cast<int>(last_url_params.get("int")) == 100);
-        CHECK(boost::lexical_cast<double>(last_url_params.get("double")) ==
+        CHECK(utility::lexical_cast<int>(last_url_params.get("int")) == 100);
+        CHECK(utility::lexical_cast<double>(last_url_params.get("double")) ==
               123.45);
-        CHECK(boost::lexical_cast<bool>(last_url_params.get("boolean")));
+        CHECK(utility::lexical_cast<bool>(last_url_params.get("boolean")));
     }
     // check single array value
     sendmsg = "GET /params?tmnt[]=leonardo\r\n\r\n";
@@ -1804,6 +2102,24 @@ TEST_CASE("route_dynamic")
 
 TEST_CASE("multipart")
 {
+    //
+    //--CROW-BOUNDARY
+    //Content-Disposition: form-data; name=\"hello\"
+    //
+    //world
+    //--CROW-BOUNDARY
+    //Content-Disposition: form-data; name=\"world\"
+    //
+    //hello
+    //--CROW-BOUNDARY
+    //Content-Disposition: form-data; name=\"multiline\"
+    //
+    //text
+    //text
+    //text
+    //--CROW-BOUNDARY--
+    //
+
     std::string test_string = "--CROW-BOUNDARY\r\nContent-Disposition: form-data; name=\"hello\"\r\n\r\nworld\r\n--CROW-BOUNDARY\r\nContent-Disposition: form-data; name=\"world\"\r\n\r\nhello\r\n--CROW-BOUNDARY\r\nContent-Disposition: form-data; name=\"multiline\"\r\n\r\ntext\ntext\ntext\r\n--CROW-BOUNDARY--\r\n";
 
     SimpleApp app;
@@ -1811,7 +2127,6 @@ TEST_CASE("multipart")
     CROW_ROUTE(app, "/multipart")
     ([](const crow::request& req, crow::response& res) {
         multipart::message msg(req);
-        res.add_header("Content-Type", "multipart/form-data; boundary=CROW-BOUNDARY");
         res.body = msg.dump();
         res.end();
     });
@@ -1829,14 +2144,35 @@ TEST_CASE("multipart")
         app.handle(req, res);
 
         CHECK(test_string == res.body);
+
+
+        multipart::message msg(req);
+        CHECK("hello" == msg.get_part_by_name("world").body);
+        CHECK("form-data" == msg.get_part_by_name("hello").get_header_object("Content-Disposition").value);
+    }
+
+    // Check with `"` encapsulating the boundary (.NET clients do this)
+    {
+        request req;
+        response res;
+
+        req.url = "/multipart";
+        req.add_header("Content-Type", "multipart/form-data; boundary=\"CROW-BOUNDARY\"");
+        req.body = test_string;
+
+        app.handle(req, res);
+
+        CHECK(test_string == res.body);
     }
 } // multipart
 
 TEST_CASE("send_file")
 {
 
-    struct stat statbuf;
-    stat("tests/img/cat.jpg", &statbuf);
+    struct stat statbuf_cat;
+    stat("tests/img/cat.jpg", &statbuf_cat);
+    struct stat statbuf_badext;
+    stat("tests/img/filewith.badext", &statbuf_badext);
 
     SimpleApp app;
 
@@ -1850,6 +2186,12 @@ TEST_CASE("send_file")
     ([](const crow::request&, crow::response& res) {
         res.set_static_file_info(
           "tests/img/cat2.jpg"); // This file is nonexistent on purpose
+        res.end();
+    });
+
+    CROW_ROUTE(app, "/filewith.badext")
+    ([](const crow::request&, crow::response& res) {
+        res.set_static_file_info("tests/img/filewith.badext");
         res.end();
     });
 
@@ -1879,8 +2221,33 @@ TEST_CASE("send_file")
         app.handle(req, res);
 
         CHECK(200 == res.code);
-        CHECK("image/jpeg" == res.headers.find("Content-Type")->second);
-        CHECK(to_string(statbuf.st_size) == res.headers.find("Content-Length")->second);
+
+        CHECK(res.headers.count("Content-Type"));
+        if (res.headers.count("Content-Type"))
+            CHECK("image/jpeg" == res.headers.find("Content-Type")->second);
+
+        CHECK(res.headers.count("Content-Length"));
+        if (res.headers.count("Content-Length"))
+            CHECK(to_string(statbuf_cat.st_size) == res.headers.find("Content-Length")->second);
+    }
+
+    //Unknown extension check
+    {
+        request req;
+        response res;
+
+        req.url = "/filewith.badext";
+        req.http_ver_major = 1;
+
+        CHECK_NOTHROW(app.handle(req, res));
+        CHECK(200 == res.code);
+        CHECK(res.headers.count("Content-Type"));
+        if (res.headers.count("Content-Type"))
+            CHECK("text/plain" == res.headers.find("Content-Type")->second);
+
+        CHECK(res.headers.count("Content-Length"));
+        if (res.headers.count("Content-Length"))
+            CHECK(to_string(statbuf_badext.st_size) == res.headers.find("Content-Length")->second);
     }
 } // send_file
 
@@ -1906,12 +2273,9 @@ TEST_CASE("stream_response")
 
     app.validate();
 
-    //running the test on a separate thread to allow the client to sleep
-    std::thread runTest([&app, &key_response, key_response_size]() {
-        auto _ = async(launch::async,
-                       [&] {
-                           app.bindaddr(LOCALHOST_ADDRESS).port(45451).run();
-                       });
+    // running the test on a separate thread to allow the client to sleep
+    std::thread runTest([&app, &key_response, key_response_size, keyword_]() {
+        auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45451).run_async();
         app.wait_for_server_start();
         asio::io_service is;
         std::string sendmsg;
@@ -1927,22 +2291,28 @@ TEST_CASE("stream_response")
               asio::ip::address::from_string(LOCALHOST_ADDRESS), 45451));
             c.send(asio::buffer(sendmsg));
 
-            //consuming the headers, since we don't need those for the test
+            // consuming the headers, since we don't need those for the test
             static char buf[2048];
             size_t received_headers_bytes = 0;
 
-            // magic number is 102 (it's the size of the headers, which is how much this line below needs to read)
-            const size_t headers_bytes = 102;
-            while (received_headers_bytes < headers_bytes)
-                received_headers_bytes += c.receive(asio::buffer(buf, 2048));
-            received += received_headers_bytes - headers_bytes; //add any extra that might have been received to the proper received count
+            // Magic number is 102. It's the size of the headers, which is at
+            // least how much we need to read. Since the header size may change
+            // and break the test, we read twice as much as the header and
+            // search in the received data for the first occurrence of keyword_.
+            const size_t headers_bytes_and_some = 102 * 2;
+            while (received_headers_bytes < headers_bytes_and_some)
+                received_headers_bytes += c.receive(asio::buffer(buf + received_headers_bytes,
+                                                                 sizeof(buf) / sizeof(buf[0]) - received_headers_bytes));
 
+            const std::string::size_type header_end_pos = std::string(buf, received_headers_bytes).find(keyword_);
+            received += received_headers_bytes - header_end_pos; // add any extra that might have been received to the proper received count
 
             while (received < key_response_size)
             {
                 asio::streambuf::mutable_buffers_type bufs = b.prepare(16384);
 
-                size_t n = c.receive(bufs);
+                size_t n(0);
+                n = c.receive(bufs);
                 b.commit(n);
                 received += n;
 
@@ -1951,8 +2321,6 @@ TEST_CASE("stream_response")
                 is >> s;
 
                 CHECK(key_response.substr(received - n, n) == s);
-
-                //std::this_thread::sleep_for(std::chrono::milliseconds(20));
             }
         }
         app.stop();
@@ -1968,10 +2336,10 @@ TEST_CASE("websocket")
 
     SimpleApp app;
 
-    CROW_ROUTE(app, "/ws").websocket().onopen([&](websocket::connection&) {
-                                          connected = true;
-                                          CROW_LOG_INFO << "Connected websocket and value is " << connected;
-                                      })
+    CROW_WEBSOCKET_ROUTE(app, "/ws").onopen([&](websocket::connection&) {
+                                        connected = true;
+                                        CROW_LOG_INFO << "Connected websocket and value is " << connected;
+                                    })
       .onmessage([&](websocket::connection& conn, const std::string& message, bool isbin) {
           CROW_LOG_INFO << "Message is \"" << message << '\"';
           if (!isbin && message == "PINGME")
@@ -1987,10 +2355,7 @@ TEST_CASE("websocket")
 
     app.validate();
 
-    auto _ = async(launch::async,
-                   [&] {
-                       app.bindaddr(LOCALHOST_ADDRESS).port(45451).run();
-                   });
+    auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45451).run_async();
     app.wait_for_server_start();
     asio::io_service is;
 
@@ -2121,6 +2486,78 @@ TEST_CASE("websocket")
     app.stop();
 } // websocket
 
+TEST_CASE("websocket_max_payload")
+{
+    static std::string http_message = "GET /ws HTTP/1.1\r\nConnection: keep-alive, Upgrade\r\nupgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+
+    static bool connected{false};
+
+    SimpleApp app;
+
+    CROW_WEBSOCKET_ROUTE(app, "/ws")
+      .onopen([&](websocket::connection&) {
+          connected = true;
+          CROW_LOG_INFO << "Connected websocket and value is " << connected;
+      })
+      .onmessage([&](websocket::connection& conn, const std::string& message, bool isbin) {
+          CROW_LOG_INFO << "Message is \"" << message << '\"';
+          if (!isbin && message == "PINGME")
+              conn.send_ping("");
+          else if (!isbin && message == "Hello")
+              conn.send_text("Hello back");
+          else if (isbin && message == "Hello bin")
+              conn.send_binary("Hello back bin");
+      })
+      .onclose([&](websocket::connection&, const std::string&) {
+          CROW_LOG_INFO << "Closing websocket";
+      });
+
+    app.validate();
+
+    auto _ = app.websocket_max_payload(3).bindaddr(LOCALHOST_ADDRESS).port(45461).run_async();
+    app.wait_for_server_start();
+    asio::io_service is;
+
+    asio::ip::tcp::socket c(is);
+    c.connect(asio::ip::tcp::endpoint(
+      asio::ip::address::from_string(LOCALHOST_ADDRESS), 45461));
+
+
+    char buf[2048];
+
+    //----------Handshake----------
+    {
+        std::fill_n(buf, 2048, 0);
+        c.send(asio::buffer(http_message));
+
+        c.receive(asio::buffer(buf, 2048));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        CHECK(connected);
+    }
+    //----------Text----------
+    {
+        std::fill_n(buf, 2048, 0);
+        char text_message[2 + 5 + 1]("\x81\x05"
+                                     "Hello");
+
+        c.send(asio::buffer(text_message, 7));
+        try
+        {
+            c.receive(asio::buffer(buf, 2048));
+            FAIL_CHECK();
+        }
+        catch (std::exception& e)
+        {
+            CROW_LOG_DEBUG << "websocket_max_payload test passed due to the exception: " << e.what();
+        }
+    }
+
+    asio::error_code ec;
+    c.lowest_layer().shutdown(asio::socket_base::shutdown_type::shutdown_both, ec);
+
+    app.stop();
+} // websocket_max_payload
+
 #ifdef CROW_ENABLE_COMPRESSION
 TEST_CASE("zlib_compression")
 {
@@ -2162,12 +2599,8 @@ TEST_CASE("zlib_compression")
         res.end();
     });
 
-    auto t1 = async(launch::async, [&] {
-        app_deflate.bindaddr(LOCALHOST_ADDRESS).port(45451).use_compression(compression::algorithm::DEFLATE).run();
-    });
-    auto t2 = async(launch::async, [&] {
-        app_gzip.bindaddr(LOCALHOST_ADDRESS).port(45452).use_compression(compression::algorithm::GZIP).run();
-    });
+    auto t1 = app_deflate.bindaddr(LOCALHOST_ADDRESS).port(45451).use_compression(compression::algorithm::DEFLATE).run_async();
+    auto t2 = app_gzip.bindaddr(LOCALHOST_ADDRESS).port(45452).use_compression(compression::algorithm::GZIP).run_async();
 
     app_deflate.wait_for_server_start();
     app_gzip.wait_for_server_start();
@@ -2522,12 +2955,18 @@ TEST_CASE("blueprint")
 TEST_CASE("base64")
 {
     unsigned char sample_bin[] = {0x14, 0xfb, 0x9c, 0x03, 0xd9, 0x7e};
+    std::string sample_bin_str(reinterpret_cast<char const*>(sample_bin),
+                               sizeof(sample_bin) / sizeof(sample_bin[0]));
     std::string sample_bin_enc = "FPucA9l+";
     std::string sample_bin_enc_url = "FPucA9l-";
     unsigned char sample_bin1[] = {0x14, 0xfb, 0x9c, 0x03, 0xd9};
+    std::string sample_bin1_str(reinterpret_cast<char const*>(sample_bin1),
+                                sizeof(sample_bin1) / sizeof(sample_bin1[0]));
     std::string sample_bin1_enc = "FPucA9k=";
     std::string sample_bin1_enc_np = "FPucA9k";
     unsigned char sample_bin2[] = {0x14, 0xfb, 0x9c, 0x03};
+    std::string sample_bin2_str(reinterpret_cast<char const*>(sample_bin2),
+                                sizeof(sample_bin2) / sizeof(sample_bin2[0]));
     std::string sample_bin2_enc = "FPucAw==";
     std::string sample_bin2_enc_np = "FPucAw";
     std::string sample_text = "Crow Allows users to handle requests that may not come from the network. This is done by calling the handle(req, res) method and providing a request and response objects. Which causes crow to identify and run the appropriate handler, returning the resulting response.";
@@ -2535,20 +2974,19 @@ TEST_CASE("base64")
 
 
     CHECK(crow::utility::base64encode(sample_text, sample_text.length()) == sample_base64);
-    CHECK(crow::utility::base64encode((unsigned char*)sample_bin, 6) == sample_bin_enc);
-    CHECK(crow::utility::base64encode_urlsafe((unsigned char*)sample_bin, 6) == sample_bin_enc_url);
-    CHECK(crow::utility::base64encode((unsigned char*)sample_bin1, 5) == sample_bin1_enc);
-    CHECK(crow::utility::base64encode((unsigned char*)sample_bin2, 4) == sample_bin2_enc);
-
+    CHECK(crow::utility::base64encode(sample_bin, 6) == sample_bin_enc);
+    CHECK(crow::utility::base64encode_urlsafe(sample_bin, 6) == sample_bin_enc_url);
+    CHECK(crow::utility::base64encode(sample_bin1, 5) == sample_bin1_enc);
+    CHECK(crow::utility::base64encode(sample_bin2, 4) == sample_bin2_enc);
 
     CHECK(crow::utility::base64decode(sample_base64) == sample_text);
     CHECK(crow::utility::base64decode(sample_base64, sample_base64.length()) == sample_text);
-    CHECK(crow::utility::base64decode(sample_bin_enc, 8) == std::string(reinterpret_cast<char const*>(sample_bin)));
-    CHECK(crow::utility::base64decode(sample_bin_enc_url, 8) == std::string(reinterpret_cast<char const*>(sample_bin)));
-    CHECK(crow::utility::base64decode(sample_bin1_enc, 8) == std::string(reinterpret_cast<char const*>(sample_bin1)).substr(0, 5));
-    CHECK(crow::utility::base64decode(sample_bin1_enc_np, 7) == std::string(reinterpret_cast<char const*>(sample_bin1)).substr(0, 5));
-    CHECK(crow::utility::base64decode(sample_bin2_enc, 8) == std::string(reinterpret_cast<char const*>(sample_bin2)).substr(0, 4));
-    CHECK(crow::utility::base64decode(sample_bin2_enc_np, 6) == std::string(reinterpret_cast<char const*>(sample_bin2)).substr(0, 4));
+    CHECK(crow::utility::base64decode(sample_bin_enc, 8) == sample_bin_str);
+    CHECK(crow::utility::base64decode(sample_bin_enc_url, 8) == sample_bin_str);
+    CHECK(crow::utility::base64decode(sample_bin1_enc, 8) == sample_bin1_str);
+    CHECK(crow::utility::base64decode(sample_bin1_enc_np, 7) == sample_bin1_str);
+    CHECK(crow::utility::base64decode(sample_bin2_enc, 8) == sample_bin2_str);
+    CHECK(crow::utility::base64decode(sample_bin2_enc_np, 6) == sample_bin2_str);
 } // base64
 
 TEST_CASE("sanitize_filename")
@@ -2586,9 +3024,7 @@ TEST_CASE("get_port")
 
     const std::uint16_t port = 12345;
 
-    auto _ = async(launch::async, [&] {
-        app.port(port).run();
-    });
+    auto _ = app.port(port).run_async();
 
     app.wait_for_server_start();
     CHECK(app.port() == port);
@@ -2608,9 +3044,8 @@ TEST_CASE("timeout")
             return "hello";
         });
 
-        auto _ = async(launch::async, [&] {
-            app.bindaddr(LOCALHOST_ADDRESS).timeout(timeout).port(45451).run();
-        });
+        auto _ = app.bindaddr(LOCALHOST_ADDRESS).timeout(timeout).port(45451).run_async();
+
         app.wait_for_server_start();
         asio::io_service is;
         std::string sendmsg = "GET /\r\n\r\n";
@@ -2622,7 +3057,7 @@ TEST_CASE("timeout")
               asio::ip::address::from_string(LOCALHOST_ADDRESS), 45451));
 
             auto receive_future = async(launch::async, [&]() {
-                boost::system::error_code ec;
+                asio::error_code ec;
                 c.receive(asio::buffer(buf, 2048), 0, ec);
                 return ec;
             });
@@ -2642,7 +3077,7 @@ TEST_CASE("timeout")
 
             size_t received;
             auto receive_future = async(launch::async, [&]() {
-                boost::system::error_code ec;
+                asio::error_code ec;
                 received = c.receive(asio::buffer(buf, 2048), 0, ec);
                 return ec;
             });
@@ -2668,9 +3103,9 @@ TEST_CASE("timeout")
 
 TEST_CASE("task_timer")
 {
-    using work_guard_type = boost::asio::executor_work_guard<boost::asio::io_service::executor_type>;
+    using work_guard_type = asio::executor_work_guard<asio::io_service::executor_type>;
 
-    boost::asio::io_service io_service;
+    asio::io_service io_service;
     work_guard_type work_guard(io_service.get_executor());
     thread io_thread([&io_service]() {
         io_service.run();
@@ -2705,3 +3140,39 @@ TEST_CASE("task_timer")
     io_service.stop();
     io_thread.join();
 } // task_timer
+
+
+TEST_CASE("trim")
+{
+    CHECK(utility::trim("") == "");
+    CHECK(utility::trim("0") == "0");
+    CHECK(utility::trim(" a") == "a");
+    CHECK(utility::trim("b ") == "b");
+    CHECK(utility::trim(" c ") == "c");
+    CHECK(utility::trim(" a b ") == "a b");
+    CHECK(utility::trim("   ") == "");
+}
+
+TEST_CASE("string_equals")
+{
+    CHECK(utility::string_equals("a", "aa") == false);
+    CHECK(utility::string_equals("a", "b") == false);
+    CHECK(utility::string_equals("", "") == true);
+    CHECK(utility::string_equals("abc", "abc") == true);
+    CHECK(utility::string_equals("ABC", "abc") == true);
+
+    CHECK(utility::string_equals("a", "aa", true) == false);
+    CHECK(utility::string_equals("a", "b", true) == false);
+    CHECK(utility::string_equals("", "", true) == true);
+    CHECK(utility::string_equals("abc", "abc", true) == true);
+    CHECK(utility::string_equals("ABC", "abc", true) == false);
+}
+
+TEST_CASE("lexical_cast")
+{
+    CHECK(utility::lexical_cast<int>(4) == 4);
+    CHECK(utility::lexical_cast<double>(4) == 4.0);
+    CHECK(utility::lexical_cast<int>("5") == 5);
+    CHECK(utility::lexical_cast<string>(4) == "4");
+    CHECK(utility::lexical_cast<float>("10", 2) == 10.0f);
+}
