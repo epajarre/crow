@@ -28,10 +28,10 @@
 #define CROW_ROUTE(app, url) app.route_dynamic(url)
 #define CROW_BP_ROUTE(blueprint, url) blueprint.new_rule_dynamic(url)
 #else
-#define CROW_ROUTE(app, url) app.route<crow::black_magic::get_parameter_tag(url)>(url)
+#define CROW_ROUTE(app, url) app.template route<crow::black_magic::get_parameter_tag(url)>(url)
 #define CROW_BP_ROUTE(blueprint, url) blueprint.new_rule_tagged<crow::black_magic::get_parameter_tag(url)>(url)
-#define CROW_WEBSOCKET_ROUTE(app, url) app.route<crow::black_magic::get_parameter_tag(url)>(url).websocket<decltype(app)>(&app)
-#define CROW_MIDDLEWARES(app, ...) middlewares<std::remove_reference<decltype(app)>::type, __VA_ARGS__>()
+#define CROW_WEBSOCKET_ROUTE(app, url) app.route<crow::black_magic::get_parameter_tag(url)>(url).websocket<std::remove_reference<decltype(app)>::type>(&app)
+#define CROW_MIDDLEWARES(app, ...) template middlewares<typename std::remove_reference<decltype(app)>::type, __VA_ARGS__>()
 #endif
 #define CROW_CATCHALL_ROUTE(app) app.catchall_route()
 #define CROW_BP_CATCHALL_ROUTE(blueprint) blueprint.catchall_rule()
@@ -76,10 +76,24 @@ namespace crow
             router_.handle_upgrade(req, res, adaptor);
         }
 
-        /// Process the request and generate a response for it
-        void handle(request& req, response& res)
+        /// Process only the method and URL of a request and provide a route (or an error response)
+        std::unique_ptr<routing_handle_result> handle_initial(request& req, response& res)
         {
-            router_.handle<self_t>(req, res);
+            return router_.handle_initial(req, res);
+        }
+
+        /// Process the fully parsed request and generate a response for it
+        void handle(request& req, response& res, std::unique_ptr<routing_handle_result>& found)
+        {
+            router_.handle<self_t>(req, res, *found);
+        }
+
+        /// Process a fully parsed request from start to finish (primarily used for debugging)
+        void handle_full(request& req, response& res)
+        {
+            auto found = handle_initial(req, res);
+            if (found->rule_index)
+                handle(req, res, found);
         }
 
         /// Create a dynamic route using a rule (**Use CROW_ROUTE instead**)
@@ -153,7 +167,6 @@ namespace crow
             return port_;
         }
 
-
         /// Set the connection timeout in seconds (default is 5)
         self_t& timeout(std::uint8_t timeout)
         {
@@ -174,6 +187,12 @@ namespace crow
             bindaddr_ = bindaddr;
             return *this;
         }
+        
+        /// Get the address that Crow will handle requests on
+        std::string bindaddr()
+        {
+            return bindaddr_;
+        }
 
         /// Run the server on multiple threads using all available threads
         self_t& multithreaded()
@@ -188,6 +207,12 @@ namespace crow
                 concurrency = 2;
             concurrency_ = concurrency;
             return *this;
+        }
+        
+        /// Get the number of threads that server is using
+        std::uint16_t concurrency()
+        {
+            return concurrency_;
         }
 
         /// Set the server's log level
@@ -264,9 +289,16 @@ namespace crow
             {
 
 #ifndef CROW_DISABLE_STATIC_DIR
-                route<crow::black_magic::get_parameter_tag(CROW_STATIC_ENDPOINT)>(CROW_STATIC_ENDPOINT)([](crow::response& res, std::string file_path_partial) {
+
+                // stat on windows doesn't care whether '/' or '\' is being used. on Linux however, using '\' doesn't work. therefore every instance of '\' gets replaced with '/' then a check is done to make sure the directory ends with '/'.
+                std::string static_dir_(CROW_STATIC_DIRECTORY);
+                std::replace(static_dir_.begin(), static_dir_.end(), '\\', '/');
+                if (static_dir_[static_dir_.length() - 1] != '/')
+                    static_dir_ += '/';
+
+                route<crow::black_magic::get_parameter_tag(CROW_STATIC_ENDPOINT)>(CROW_STATIC_ENDPOINT)([static_dir_](crow::response& res, std::string file_path_partial) {
                     utility::sanitize_filename(file_path_partial);
-                    res.set_static_file_info_unsafe(CROW_STATIC_DIRECTORY + file_path_partial);
+                    res.set_static_file_info_unsafe(static_dir_ + file_path_partial);
                     res.end();
                 });
 
@@ -278,9 +310,15 @@ namespace crow
                     {
                         if (!bp->static_dir().empty())
                         {
-                            bp->new_rule_tagged<crow::black_magic::get_parameter_tag(CROW_STATIC_ENDPOINT)>(CROW_STATIC_ENDPOINT)([bp](crow::response& res, std::string file_path_partial) {
+                            // stat on windows doesn't care whether '/' or '\' is being used. on Linux however, using '\' doesn't work. therefore every instance of '\' gets replaced with '/' then a check is done to make sure the directory ends with '/'.
+                            std::string static_dir_(bp->static_dir());
+                            std::replace(static_dir_.begin(), static_dir_.end(), '\\', '/');
+                            if (static_dir_[static_dir_.length() - 1] != '/')
+                                static_dir_ += '/';
+
+                            bp->new_rule_tagged<crow::black_magic::get_parameter_tag(CROW_STATIC_ENDPOINT)>(CROW_STATIC_ENDPOINT)([static_dir_](crow::response& res, std::string file_path_partial) {
                                 utility::sanitize_filename(file_path_partial);
-                                res.set_static_file_info_unsafe(bp->static_dir() + '/' + file_path_partial);
+                                res.set_static_file_info_unsafe(static_dir_ + file_path_partial);
                                 res.end();
                             });
                         }
@@ -327,6 +365,9 @@ namespace crow
         }
 
         /// Non-blocking version of \ref run()
+        ///
+        /// The output from this method needs to be saved into a variable!
+        /// Otherwise the call will be made on the same thread.
         std::future<void> run_async()
         {
             return std::async(std::launch::async, [&] {
@@ -345,6 +386,7 @@ namespace crow
             else
 #endif
             {
+                // TODO(EDev): Move these 6 lines to a method in http_server.
                 std::vector<crow::websocket::connection*> websockets_to_close = websockets_;
                 for (auto websocket : websockets_to_close)
                 {

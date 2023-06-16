@@ -4,16 +4,17 @@
 #include <sys/stat.h>
 
 #include <iostream>
-#include <sstream>
 #include <vector>
 #include <thread>
 #include <chrono>
 #include <type_traits>
+#include <regex>
 
 #include "catch.hpp"
 #include "crow.h"
 #include "crow/middlewares/cookie_parser.h"
 #include "crow/middlewares/cors.h"
+#include "crow/middlewares/session.h"
 
 using namespace std;
 using namespace crow;
@@ -114,7 +115,7 @@ TEST_CASE("PathRouting")
 
         req.url = "/file";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(200 == res.code);
     }
@@ -124,7 +125,7 @@ TEST_CASE("PathRouting")
 
         req.url = "/file/";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
         CHECK(404 == res.code);
     }
     {
@@ -133,7 +134,7 @@ TEST_CASE("PathRouting")
 
         req.url = "/path";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
         CHECK(404 != res.code);
     }
     {
@@ -142,10 +143,31 @@ TEST_CASE("PathRouting")
 
         req.url = "/path/";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
         CHECK(200 == res.code);
     }
 } // PathRouting
+
+TEST_CASE("InvalidPathRouting")
+{
+    SimpleApp app;
+
+    CROW_ROUTE(app, "invalid_route")
+    ([] {
+        return "should not arrive here";
+    });
+
+    try
+    {
+        app.validate();
+        FAIL_CHECK();
+    }
+    catch (std::exception& e)
+    {
+        auto expected_exception_text = "Internal error: Routes must start with a '/'";
+        CHECK(strcmp(expected_exception_text, e.what()) == 0);
+    }
+} // InvalidPathRouting
 
 TEST_CASE("RoutingTest")
 {
@@ -196,7 +218,7 @@ TEST_CASE("RoutingTest")
 
         req.url = "/-1";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(404 == res.code);
     }
@@ -207,7 +229,7 @@ TEST_CASE("RoutingTest")
 
         req.url = "/0/1001999";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(200 == res.code);
 
@@ -220,7 +242,7 @@ TEST_CASE("RoutingTest")
 
         req.url = "/1/-100/1999";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(200 == res.code);
 
@@ -234,7 +256,7 @@ TEST_CASE("RoutingTest")
         req.url = "/4/5000/3/-2.71828/hellhere";
         req.add_header("TestHeader", "Value");
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(200 == res.code);
 
@@ -250,7 +272,7 @@ TEST_CASE("RoutingTest")
         req.url = "/5/-5/999/3.141592/hello_there/a/b/c/d";
         req.add_header("TestHeader", "Value");
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(200 == res.code);
 
@@ -287,6 +309,34 @@ TEST_CASE("simple_response_routing_params")
     CHECK(3 == rp.get<double>(0));
     CHECK("hello" == rp.get<string>(0));
 } // simple_response_routing_params
+
+TEST_CASE("custom_content_types")
+{
+    // standard behaviour: content type is a key of mime_types
+    CHECK("text/html" == response("html", "").get_header_value("Content-Type"));
+    CHECK("image/jpeg" == response("jpg", "").get_header_value("Content-Type"));
+    CHECK("video/mpeg" == response("mpg", "").get_header_value("Content-Type"));
+
+    // content type is already a valid mime type
+    CHECK("text/csv" == response("text/csv", "").get_header_value("Content-Type"));
+    CHECK("application/xhtml+xml" == response("application/xhtml+xml", "").get_header_value("Content-Type"));
+    CHECK("font/custom;parameters=ok" == response("font/custom;parameters=ok", "").get_header_value("Content-Type"));
+
+    // content type looks like a mime type, but is invalid
+    // note: RFC6838 only allows a limited set of parent types:
+    // https://datatracker.ietf.org/doc/html/rfc6838#section-4.2.7
+    //
+    // These types are: application, audio, font, example, image, message,
+    //                  model, multipart, text, video
+
+    CHECK("text/plain" == response("custom/type", "").get_header_value("Content-Type"));
+
+    // content type does not look like a mime type.
+    CHECK("text/plain" == response("notarealextension", "").get_header_value("Content-Type"));
+    CHECK("text/plain" == response("image/", "").get_header_value("Content-Type"));
+    CHECK("text/plain" == response("/json", "").get_header_value("Content-Type"));
+
+} // custom_content_types
 
 TEST_CASE("handler_with_response")
 {
@@ -341,7 +391,7 @@ TEST_CASE("http_method")
         response res;
 
         req.url = "/";
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK("2" == res.body);
     }
@@ -351,7 +401,7 @@ TEST_CASE("http_method")
 
         req.url = "/";
         req.method = "POST"_method;
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK("1" == res.body);
     }
@@ -362,7 +412,7 @@ TEST_CASE("http_method")
 
         req.url = "/head_only";
         req.method = "HEAD"_method;
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(202 == res.code);
         CHECK("" == res.body);
@@ -373,7 +423,7 @@ TEST_CASE("http_method")
         response res;
 
         req.url = "/get_only";
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK("get" == res.body);
     }
@@ -384,7 +434,7 @@ TEST_CASE("http_method")
 
         req.url = "/patch_only";
         req.method = "PATCH"_method;
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK("patch" == res.body);
     }
@@ -395,7 +445,7 @@ TEST_CASE("http_method")
 
         req.url = "/purge_only";
         req.method = "PURGE"_method;
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK("purge" == res.body);
     }
@@ -406,7 +456,7 @@ TEST_CASE("http_method")
 
         req.url = "/get_only";
         req.method = "POST"_method;
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK("get" != res.body);
     }
@@ -417,7 +467,7 @@ TEST_CASE("http_method")
 
         req.url = "/get_only";
         req.method = "POST"_method;
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(405 == res.code);
     }
@@ -428,7 +478,7 @@ TEST_CASE("http_method")
 
         req.url = "/get_only";
         req.method = "HEAD"_method;
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(200 == res.code);
         CHECK("" == res.body);
@@ -440,7 +490,7 @@ TEST_CASE("http_method")
 
         req.url = "/";
         req.method = "OPTIONS"_method;
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(204 == res.code);
         CHECK("OPTIONS, HEAD, GET, POST" == res.get_header_value("Allow"));
@@ -452,7 +502,7 @@ TEST_CASE("http_method")
 
         req.url = "/does_not_exist";
         req.method = "OPTIONS"_method;
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(404 == res.code);
     }
@@ -463,7 +513,7 @@ TEST_CASE("http_method")
 
         req.url = "/*";
         req.method = "OPTIONS"_method;
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(204 == res.code);
         CHECK("OPTIONS, HEAD, GET, POST, PATCH, PURGE" == res.get_header_value("Allow"));
@@ -475,7 +525,7 @@ TEST_CASE("http_method")
 
         req.url = "/head_only";
         req.method = "OPTIONS"_method;
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(204 == res.code);
         CHECK("OPTIONS, HEAD" == res.get_header_value("Allow"));
@@ -1213,14 +1263,32 @@ TEST_CASE("template_basic")
     CHECK("attack of killer tomatoes" == result);
 } // template_basic
 
+TEST_CASE("template_true_tag")
+{
+    auto t = crow::mustache::compile(R"---({{true_value}})---");
+    crow::mustache::context ctx;
+    ctx["true_value"] = true;
+    auto result = t.render_string(ctx);
+    CHECK("true" == result);
+} // template_true_tag
+
+TEST_CASE("template_false_tag")
+{
+    auto t = crow::mustache::compile(R"---({{false_value}})---");
+    crow::mustache::context ctx;
+    ctx["false_value"] = false;
+    auto result = t.render_string(ctx);
+    CHECK("false" == result);
+} // template_false_tag
+
 TEST_CASE("template_function")
 {
     auto t = crow::mustache::compile("attack of {{func}}");
     crow::mustache::context ctx;
     ctx["name"] = "killer tomatoes";
-    ctx["func"] = [&](std::string) {
+    ctx["func"] = std::function<std::string(std::string)>([&](std::string) {
         return std::string("{{name}}, IN SPACE!");
-    };
+    });
     auto result = t.render_string(ctx);
     CHECK("attack of killer tomatoes, IN SPACE!" == result);
 }
@@ -1257,7 +1325,7 @@ TEST_CASE("TemplateRouting")
 
         req.url = "/temp";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK("attack of killer tomatoes" == res.body);
         CHECK("text/html" == crow::get_header_value(res.headers, "Content-Type"));
@@ -1449,14 +1517,18 @@ TEST_CASE("middleware_context")
     {
         auto& out = test_middleware_context_vector;
         CHECK(1 == x);
-        CHECK(7 == out.size());
-        CHECK("1 before" == out[0]);
-        CHECK("2 before" == out[1]);
-        CHECK("3 before" == out[2]);
-        CHECK("handle" == out[3]);
-        CHECK("3 after" == out[4]);
-        CHECK("2 after" == out[5]);
-        CHECK("1 after" == out[6]);
+        bool cond = 7 == out.size();
+        CHECK(cond);
+        if (cond)
+        {
+            CHECK("1 before" == out[0]);
+            CHECK("2 before" == out[1]);
+            CHECK("3 before" == out[2]);
+            CHECK("handle" == out[3]);
+            CHECK("3 after" == out[4]);
+            CHECK("2 after" == out[5]);
+            CHECK("1 after" == out[6]);
+        }
     }
     std::string sendmsg2 = "GET /break\r\n\r\n";
     {
@@ -1471,11 +1543,15 @@ TEST_CASE("middleware_context")
     }
     {
         auto& out = test_middleware_context_vector;
-        CHECK(4 == out.size());
-        CHECK("1 before" == out[0]);
-        CHECK("2 before" == out[1]);
-        CHECK("2 after" == out[2]);
-        CHECK("1 after" == out[3]);
+        bool cond = 4 == out.size();
+        CHECK(cond);
+        if (cond)
+        {
+            CHECK("1 before" == out[0]);
+            CHECK("2 before" == out[1]);
+            CHECK("2 after" == out[2]);
+            CHECK("1 after" == out[3]);
+        }
     }
     app.stop();
 } // middleware_context
@@ -1610,14 +1686,18 @@ TEST_CASE("middleware_blueprint")
     }
     {
         auto& out = test_middleware_context_vector;
-        CHECK(7 == out.size());
-        CHECK("1 before" == out[0]);
-        CHECK("2 before" == out[1]);
-        CHECK("3 before" == out[2]);
-        CHECK("handle" == out[3]);
-        CHECK("3 after" == out[4]);
-        CHECK("2 after" == out[5]);
-        CHECK("1 after" == out[6]);
+        bool cond = 7 == out.size();
+        CHECK(cond);
+        if (cond)
+        {
+            CHECK("1 before" == out[0]);
+            CHECK("2 before" == out[1]);
+            CHECK("3 before" == out[2]);
+            CHECK("handle" == out[3]);
+            CHECK("3 after" == out[4]);
+            CHECK("2 after" == out[5]);
+            CHECK("1 after" == out[6]);
+        }
     }
     {
         asio::ip::tcp::socket c(is);
@@ -1631,11 +1711,15 @@ TEST_CASE("middleware_blueprint")
     }
     {
         auto& out = test_middleware_context_vector;
-        CHECK(4 == out.size());
-        CHECK("1 before" == out[0]);
-        CHECK("2 before" == out[1]);
-        CHECK("2 after" == out[2]);
-        CHECK("1 after" == out[3]);
+        bool cond = 4 == out.size();
+        CHECK(cond);
+        if (cond)
+        {
+            CHECK("1 before" == out[0]);
+            CHECK("2 before" == out[1]);
+            CHECK("2 after" == out[2]);
+            CHECK("1 after" == out[3]);
+        }
     }
 
     app.stop();
@@ -1743,6 +1827,14 @@ TEST_CASE("middleware_cookieparser_format")
         CHECK(valid(s, 2));
         CHECK(s.find("Expires=Wed, 01 Nov 2000 23:59:59 GMT") != std::string::npos);
     }
+    // prototype
+    {
+        auto c = Cookie("key");
+        c.value("value");
+        auto s = c.dump();
+        CHECK(valid(s, 1));
+        CHECK(s == "key=value");
+    }
 } // middleware_cookieparser_format
 
 TEST_CASE("middleware_cors")
@@ -1775,10 +1867,7 @@ TEST_CASE("middleware_cors")
         return "-";
     });
 
-    auto _ = async(launch::async,
-                   [&] {
-                       app.bindaddr(LOCALHOST_ADDRESS).port(45451).run();
-                   });
+    auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45451).run_async();
 
     app.wait_for_server_start();
     asio::io_service is;
@@ -1824,6 +1913,125 @@ TEST_CASE("middleware_cors")
 
     app.stop();
 } // middleware_cors
+
+TEST_CASE("middleware_session")
+{
+    static char buf[5012];
+
+    using Session = SessionMiddleware<InMemoryStore>;
+
+    App<crow::CookieParser, Session> app{
+      Session{InMemoryStore{}}};
+
+    CROW_ROUTE(app, "/get")
+    ([&](const request& req) {
+        auto& session = app.get_context<Session>(req);
+        auto key = req.url_params.get("key");
+        return session.string(key);
+    });
+
+    CROW_ROUTE(app, "/set")
+    ([&](const request& req) {
+        auto& session = app.get_context<Session>(req);
+        auto key = req.url_params.get("key");
+        auto value = req.url_params.get("value");
+        session.set(key, value);
+        return "ok";
+    });
+
+    CROW_ROUTE(app, "/count")
+    ([&](const request& req) {
+        auto& session = app.get_context<Session>(req);
+        session.apply("counter", [](int v) {
+            return v + 2;
+        });
+        return session.string("counter");
+    });
+
+    CROW_ROUTE(app, "/lock")
+    ([&](const request& req) {
+        auto& session = app.get_context<Session>(req);
+        session.mutex().lock();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        session.mutex().unlock();
+        return "OK";
+    });
+
+    CROW_ROUTE(app, "/check_lock")
+    ([&](const request& req) {
+        auto& session = app.get_context<Session>(req);
+        if (session.mutex().try_lock())
+            return "LOCKED";
+        else
+        {
+            session.mutex().unlock();
+            return "FAILED";
+        };
+    });
+
+    auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45451).run_async();
+
+    app.wait_for_server_start();
+    asio::io_service is;
+
+    auto make_request = [&](const std::string& rq) {
+        asio::ip::tcp::socket c(is);
+        c.connect(asio::ip::tcp::endpoint(
+          asio::ip::address::from_string(LOCALHOST_ADDRESS), 45451));
+        c.send(asio::buffer(rq));
+        c.receive(asio::buffer(buf, 2048));
+        c.close();
+        return std::string(buf);
+    };
+
+    std::string cookie = "Cookie: session=";
+
+    // test = works
+    {
+        auto res = make_request(
+          "GET /set?key=test&value=works\r\n" + cookie + "\r\n\r\n");
+
+        const std::regex cookiev_regex("Cookie:\\ssession=(.*?);", std::regex::icase);
+        auto istart = std::sregex_token_iterator(res.begin(), res.end(), cookiev_regex, 1);
+        auto iend = std::sregex_token_iterator();
+
+        CHECK(istart != iend);
+        cookie.append(istart->str());
+        cookie.push_back(';');
+    }
+
+    // check test = works
+    {
+        auto res = make_request("GET /get?key=test\r\n" + cookie + "\r\n\r\n");
+        CHECK(res.find("works") != std::string::npos);
+    }
+
+    // check counter
+    {
+        for (int i = 1; i < 5; i++)
+        {
+            auto res = make_request("GET /count\r\n" + cookie + "\r\n\r\n");
+            CHECK(res.find(std::to_string(2 * i)) != std::string::npos);
+        }
+    }
+
+    // lock
+    {
+        asio::ip::tcp::socket c_lock(is);
+        c_lock.connect(asio::ip::tcp::endpoint(
+          asio::ip::address::from_string(LOCALHOST_ADDRESS), 45451));
+        c_lock.send(asio::buffer("GET /lock\r\n" + cookie + "\r\n\r\n"));
+
+        auto res = make_request("GET /check_lock\r\n" + cookie + "\r\n\r\n");
+        CHECK(res.find("LOCKED") != std::string::npos);
+
+        c_lock.close();
+    }
+
+
+    app.stop();
+} // middleware_session
+
 
 TEST_CASE("bug_quick_repeated_request")
 {
@@ -2074,28 +2282,28 @@ TEST_CASE("route_dynamic")
         request req;
         response res;
         req.url = "/";
-        app.handle(req, res);
+        app.handle_full(req, res);
         CHECK(x == 2);
     }
     {
         request req;
         response res;
         req.url = "/set_int/42";
-        app.handle(req, res);
+        app.handle_full(req, res);
         CHECK(x == 42);
     }
     {
         request req;
         response res;
         req.url = "/set5";
-        app.handle(req, res);
+        app.handle_full(req, res);
         CHECK(x == 5);
     }
     {
         request req;
         response res;
         req.url = "/set4";
-        app.handle(req, res);
+        app.handle_full(req, res);
         CHECK(x == 4);
     }
 } // route_dynamic
@@ -2141,7 +2349,7 @@ TEST_CASE("multipart")
         req.add_header("Content-Type", "multipart/form-data; boundary=CROW-BOUNDARY");
         req.body = test_string;
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(test_string == res.body);
 
@@ -2160,7 +2368,7 @@ TEST_CASE("multipart")
         req.add_header("Content-Type", "multipart/form-data; boundary=\"CROW-BOUNDARY\"");
         req.body = test_string;
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(test_string == res.body);
     }
@@ -2204,7 +2412,7 @@ TEST_CASE("send_file")
 
         req.url = "/jpg2";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
 
         CHECK(404 == res.code);
@@ -2218,7 +2426,7 @@ TEST_CASE("send_file")
         req.url = "/jpg";
         req.http_ver_major = 1;
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(200 == res.code);
 
@@ -2239,7 +2447,7 @@ TEST_CASE("send_file")
         req.url = "/filewith.badext";
         req.http_ver_major = 1;
 
-        CHECK_NOTHROW(app.handle(req, res));
+        CHECK_NOTHROW(app.handle_full(req, res));
         CHECK(200 == res.code);
         CHECK(res.headers.count("Content-Type"));
         if (res.headers.count("Content-Type"))
@@ -2330,16 +2538,21 @@ TEST_CASE("stream_response")
 
 TEST_CASE("websocket")
 {
-    static std::string http_message = "GET /ws HTTP/1.1\r\nConnection: keep-alive, Upgrade\r\nupgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+    static std::string http_message = "GET /ws HTTP/1.1\r\nConnection: keep-alive, Upgrade\r\nupgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nHost: localhost\r\n\r\n";
 
     static bool connected{false};
 
     SimpleApp app;
 
-    CROW_WEBSOCKET_ROUTE(app, "/ws").onopen([&](websocket::connection&) {
-                                        connected = true;
-                                        CROW_LOG_INFO << "Connected websocket and value is " << connected;
-                                    })
+    CROW_WEBSOCKET_ROUTE(app, "/ws")
+      .onaccept([&](const crow::request& req, void**) {
+          CROW_LOG_INFO << "Accepted websocket with URL " << req.url;
+          return true;
+      })
+      .onopen([&](websocket::connection&) {
+          connected = true;
+          CROW_LOG_INFO << "Connected websocket and value is " << connected;
+      })
       .onmessage([&](websocket::connection& conn, const std::string& message, bool isbin) {
           CROW_LOG_INFO << "Message is \"" << message << '\"';
           if (!isbin && message == "PINGME")
@@ -2486,9 +2699,65 @@ TEST_CASE("websocket")
     app.stop();
 } // websocket
 
-TEST_CASE("websocket_max_payload")
+TEST_CASE("websocket_missing_host")
 {
     static std::string http_message = "GET /ws HTTP/1.1\r\nConnection: keep-alive, Upgrade\r\nupgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+
+    static bool connected{false};
+
+    SimpleApp app;
+
+    CROW_WEBSOCKET_ROUTE(app, "/ws")
+      .onaccept([&](const crow::request& req, void**) {
+          CROW_LOG_INFO << "Accepted websocket with URL " << req.url;
+          return true;
+      })
+      .onopen([&](websocket::connection&) {
+          connected = true;
+          CROW_LOG_INFO << "Connected websocket and value is " << connected;
+      })
+      .onmessage([&](websocket::connection& conn, const std::string& message, bool isbin) {
+          CROW_LOG_INFO << "Message is \"" << message << '\"';
+          if (!isbin && message == "PINGME")
+              conn.send_ping("");
+          else if (!isbin && message == "Hello")
+              conn.send_text("Hello back");
+          else if (isbin && message == "Hello bin")
+              conn.send_binary("Hello back bin");
+      })
+      .onclose([&](websocket::connection&, const std::string&) {
+          CROW_LOG_INFO << "Closing websocket";
+      });
+
+    app.validate();
+
+    auto _ = app.bindaddr(LOCALHOST_ADDRESS).port(45471).run_async();
+    app.wait_for_server_start();
+    asio::io_service is;
+
+    asio::ip::tcp::socket c(is);
+    c.connect(asio::ip::tcp::endpoint(
+      asio::ip::address::from_string(LOCALHOST_ADDRESS), 45471));
+
+
+    char buf[2048];
+
+    // Handshake should fail
+    {
+        std::fill_n(buf, 2048, 0);
+        c.send(asio::buffer(http_message));
+
+        c.receive(asio::buffer(buf, 2048));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        CHECK(!connected);
+    }
+
+    app.stop();
+} // websocket
+
+TEST_CASE("websocket_max_payload")
+{
+    static std::string http_message = "GET /ws HTTP/1.1\r\nConnection: keep-alive, Upgrade\r\nupgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nHost: localhost\r\n\r\n";
 
     static bool connected{false};
 
@@ -2797,7 +3066,7 @@ TEST_CASE("catchall")
 
         req.url = "/place";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(200 == res.code);
     }
@@ -2808,7 +3077,7 @@ TEST_CASE("catchall")
 
         req.url = "/another_place";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(404 == res.code);
         CHECK("!place" == res.body);
@@ -2820,7 +3089,7 @@ TEST_CASE("catchall")
 
         req.url = "/place";
 
-        app2.handle(req, res);
+        app2.handle_full(req, res);
 
         CHECK(200 == res.code);
     }
@@ -2831,7 +3100,7 @@ TEST_CASE("catchall")
 
         req.url = "/another_place";
 
-        app2.handle(req, res);
+        app2.handle_full(req, res);
 
         CHECK(404 == res.code);
     }
@@ -2878,7 +3147,7 @@ TEST_CASE("blueprint")
 
         req.url = "/bp_prefix/bp2/hello";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK("Hello world!" == res.body);
     }
@@ -2889,7 +3158,7 @@ TEST_CASE("blueprint")
 
         req.url = "/bp_prefix_second/hello";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK("Hello world!" == res.body);
     }
@@ -2900,7 +3169,7 @@ TEST_CASE("blueprint")
 
         req.url = "/bp_prefix/bp2/bp3/hi";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK("Hi world!" == res.body);
     }
@@ -2911,7 +3180,7 @@ TEST_CASE("blueprint")
 
         req.url = "/bp_prefix/nonexistent";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(404 == res.code);
     }
@@ -2922,7 +3191,7 @@ TEST_CASE("blueprint")
 
         req.url = "/bp_prefix_second/nonexistent";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(404 == res.code);
     }
@@ -2933,7 +3202,7 @@ TEST_CASE("blueprint")
 
         req.url = "/bp_prefix/bp2/nonexistent";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(200 == res.code);
         CHECK("WRONG!!" == res.body);
@@ -2945,7 +3214,7 @@ TEST_CASE("blueprint")
 
         req.url = "/bp_prefix/bp2/bp3/nonexistent";
 
-        app.handle(req, res);
+        app.handle_full(req, res);
 
         CHECK(200 == res.code);
         CHECK("WRONG!!" == res.body);

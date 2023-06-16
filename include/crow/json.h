@@ -1275,6 +1275,7 @@ namespace crow
             return load(str.data(), str.size());
         }
 
+        struct wvalue_reader;
 
         /// JSON write value.
 
@@ -1284,6 +1285,7 @@ namespace crow
         class wvalue : public returnable
         {
             friend class crow::mustache::template_t;
+            friend struct wvalue_reader;
 
         public:
             using object =
@@ -1296,6 +1298,9 @@ namespace crow
             using list = std::vector<wvalue>;
 
             type t() const { return t_; }
+
+            /// Create an empty json value (outputs "{}" instead of a "null" string)
+            static crow::json::wvalue empty_object() { return crow::json::wvalue(std::move(crow::json::wvalue::object())); }
 
         private:
             type t_{type::Null};         ///< The type of the value.
@@ -1651,7 +1656,7 @@ namespace crow
                 }
                 else
                 {
-#if defined(__APPLE__) || defined(__MACH__)
+#if defined(__APPLE__) || defined(__MACH__) || defined (__FreeBSD__)  || defined (__ANDROID__)
                     o = std::unique_ptr<object>(new object(initializer_list));
 #else
                     (*o) = initializer_list;
@@ -1670,7 +1675,7 @@ namespace crow
                 }
                 else
                 {
-#if defined(__APPLE__) || defined(__MACH__)
+#if defined(__APPLE__) || defined(__MACH__) || defined (__FreeBSD__)
                     o = std::unique_ptr<object>(new object(value));
 #else
                     (*o) = value;
@@ -1828,11 +1833,6 @@ namespace crow
                                 CROW_LOG_WARNING << "Invalid JSON value detected (" << v.num.d << "), value set to null";
                                 break;
                             }
-#ifdef _MSC_VER
-#define MSC_COMPATIBLE_SPRINTF(BUFFER_PTR, FORMAT_PTR, VALUE) sprintf_s((BUFFER_PTR), 128, (FORMAT_PTR), (VALUE))
-#else
-#define MSC_COMPATIBLE_SPRINTF(BUFFER_PTR, FORMAT_PTR, VALUE) sprintf((BUFFER_PTR), (FORMAT_PTR), (VALUE))
-#endif
                             enum
                             {
                                 start,
@@ -1840,7 +1840,11 @@ namespace crow
                                 zero
                             } f_state;
                             char outbuf[128];
-                            MSC_COMPATIBLE_SPRINTF(outbuf, "%f", v.num.d);
+#ifdef _MSC_VER
+			    sprintf_s(outbuf, sizeof(outbuf), "%f", v.num.d);
+#else
+			    snprintf(outbuf, sizeof(outbuf), "%f", v.num.d);
+#endif
                             char *p = &outbuf[0], *o = nullptr; // o is the position of the first trailing 0
                             f_state = start;
                             while (*p != '\0')
@@ -1880,7 +1884,6 @@ namespace crow
                             if (o != nullptr) // if any trailing 0s are found, terminate the string where they begin
                                 *o = '\0';
                             out += outbuf;
-#undef MSC_COMPATIBLE_SPRINTF
                         }
                         else if (v.nt == num_type::Signed_integer)
                         {
@@ -1950,7 +1953,38 @@ namespace crow
             }
         };
 
+        // Used for accessing the internals of a wvalue
+        struct wvalue_reader
+        {
+            int64_t get(int64_t fallback)
+            {
+                if (ref.t() != type::Number || ref.nt == num_type::Floating_point)
+                    return fallback;
+                return ref.num.si;
+            }
 
+            double get(double fallback)
+            {
+                if (ref.t() != type::Number || ref.nt != num_type::Floating_point)
+                    return fallback;
+                return ref.num.d;
+            }
+
+            bool get(bool fallback)
+            {
+                if (ref.t() == type::True) return true;
+                if (ref.t() == type::False) return false;
+                return fallback;
+            }
+
+            std::string get(const std::string& fallback)
+            {
+                if (ref.t() != type::String) return fallback;
+                return ref.s;
+            }
+
+            const wvalue& ref;
+        };
 
         //std::vector<asio::const_buffer> dump_ref(wvalue& v)
         //{

@@ -85,6 +85,14 @@ add_executable(example_cookies middlewares/example_cookies.cpp)
 add_warnings_optimizations(example_cookies)
 target_link_libraries(example_cookies PUBLIC Crow::Crow)
 
+add_executable(example_session middlewares/example_session.cpp)
+add_warnings_optimizations(example_session)
+target_link_libraries(example_session PUBLIC Crow::Crow)
+
+add_executable(example_file_upload example_file_upload.cpp)
+add_warnings_optimizations(example_file_upload)
+target_link_libraries(example_file_upload PUBLIC Crow::Crow)
+
 if(MSVC)
   add_executable(example_vs example_vs.cpp)
   add_warnings_optimizations(example_vs)
