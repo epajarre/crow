@@ -54,3 +54,12 @@ html/
 
 #VS-Code
 .vscode
+.idea
+cmake-build-debug
+.cache
+site
+venv
+
+#Bazel
+bazel-*
+MODULE.bazel.lock

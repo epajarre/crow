@@ -157,7 +157,7 @@ namespace crow
     {
         if (CROW_LIKELY(method < HTTPMethod::InternalMethodCount))
         {
-            return method_strings[(unsigned char)method];
+            return method_strings[static_cast<unsigned int>(method)];
         }
         return "invalid";
     }
@@ -190,6 +190,7 @@ namespace crow
         FORBIDDEN                     = 403,
         NOT_FOUND                     = 404,
         METHOD_NOT_ALLOWED            = 405,
+        NOT_ACCEPTABLE                = 406,
         PROXY_AUTHENTICATION_REQUIRED = 407,
         CONFLICT                      = 409,
         GONE                          = 410,
@@ -346,7 +347,7 @@ constexpr crow::HTTPMethod method_from_string(const char* str)
                                                            throw std::runtime_error("invalid http method");
 }
 
-constexpr crow::HTTPMethod operator"" _method(const char* str, size_t /*len*/)
+constexpr crow::HTTPMethod operator""_method(const char* str, size_t /*len*/)
 {
     return method_from_string( str );
 }
